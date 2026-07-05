@@ -1,0 +1,147 @@
+// Greenlight — approval-gated IT agent (sandbox)
+// SQLite locally for zero-friction demo; schema kept portable (no enums, no Json)
+// so the swap to Postgres at deploy time is a DATABASE_URL change.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// Employee personas + approvers. `role` drives policy: GTM | CLINICAL | CONTRACTOR | IT_ADMIN
+model User {
+  id      String  @id
+  name    String
+  email   String  @unique
+  role    String
+  title   String
+  isAdmin Boolean @default(false)
+
+  grants  Grant[]
+  tickets Ticket[]
+}
+
+// A connected SaaS app the agent can act on. `connectorKey` selects the connector
+// implementation; `simulateFailure` lets us demo the upstream-failure path.
+model App {
+  id              String  @id // slug, e.g. "airtable"
+  name            String
+  connectorKey    String // "okta" | "workspace"
+  levels          String // comma-separated: "read_only,editor"
+  seatsTotal      Int     @default(100)
+  seatsUsed       Int     @default(0)
+  simulateFailure Boolean @default(false)
+
+  grants Grant[]
+}
+
+// Current access state — the sandbox "system of record" the connectors mutate.
+model Grant {
+  id         String    @id @default(cuid())
+  userId     String
+  appId      String
+  level      String
+  grantedVia String // "greenlight:TKT-12"
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id])
+  app  App  @relation(fields: [appId], references: [id])
+
+  @@index([userId, appId])
+}
+
+model Ticket {
+  id          String   @id @default(cuid())
+  number      Int      @unique
+  subject     String
+  category    String // "access" | "password" | "license" | "other"
+  status      String // "new" | "in_progress" | "pending_approval" | "solved" | "denied"
+  priority    String   @default("normal")
+  requesterId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  requester User            @relation(fields: [requesterId], references: [id])
+  messages  TicketMessage[]
+  actions   ActionRun[]
+  approvals Approval[]
+}
+
+model TicketMessage {
+  id         String   @id @default(cuid())
+  ticketId   String
+  authorType String // "employee" | "agent" | "system"
+  body       String
+  createdAt  DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id])
+}
+
+// Every consequential action the agent attempts, whether it ran or not.
+model ActionRun {
+  id             String    @id @default(cuid())
+  ticketId       String
+  kind           String // "grant_access" | "revoke_access" | "reset_password" | "provision_license"
+  connectorKey   String
+  input          String // serialized JSON (SQLite: no Json type)
+  status         String // "executed" | "pending_approval" | "denied" | "failed"
+  result         String? // serialized JSON
+  policyId       String?
+  idempotencyKey String    @unique
+  createdAt      DateTime  @default(now())
+  executedAt     DateTime?
+
+  ticket   Ticket    @relation(fields: [ticketId], references: [id])
+  approval Approval?
+}
+
+// A sensitive action waiting on a human. Approving executes it; denying closes it.
+model Approval {
+  id           String    @id @default(cuid())
+  ticketId     String
+  actionRunId  String    @unique
+  summary      String
+  status       String    @default("pending") // "pending" | "approved" | "denied"
+  decidedBy    String?
+  deciderNote  String?
+  decidedAt    DateTime?
+  createdAt    DateTime  @default(now())
+
+  ticket    Ticket    @relation(fields: [ticketId], references: [id])
+  actionRun ActionRun @relation(fields: [actionRunId], references: [id])
+}
+
+// First-match-wins rules. Null fields are wildcards. Toggling `enabled` changes
+// agent behavior instantly — that's the demo's money moment.
+model Policy {
+  id          String  @id // slug
+  name        String
+  description String
+  kind        String? // match on action kind
+  appId       String? // match on app
+  level       String? // match on access level
+  role        String? // match on requester role
+  effect      String // "auto_approve" | "require_approval" | "deny"
+  sortOrder   Int
+  enabled     Boolean @default(true)
+}
+
+// Append-only, hash-chained. Each event's hash covers the previous event's hash,
+// so tampering with history is detectable — "immutable audit log" made concrete.
+model AuditEvent {
+  id         Int      @id @default(autoincrement())
+  ts         DateTime @default(now())
+  actorType  String // "agent" | "admin" | "system" | "policy"
+  actorId    String
+  action     String // "ticket.created" | "approval.requested" | "action.executed" | ...
+  targetType String
+  targetId   String
+  ticketId   String?
+  detail     String // serialized JSON
+  prevHash   String
+  hash       String
+}
