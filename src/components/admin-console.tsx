@@ -155,6 +155,7 @@ interface GraduationRow {
   label: string;
   policyName: string;
   status: string;
+  source: string; // "streak" (earned, reviewed in Approvals) | "pattern_miner" (discovered, reviewed in Suggestions)
   evidence: { streak?: number; threshold?: number; ticketNumbers?: number[] };
   impactPreview: {
     diff: {
@@ -319,8 +320,10 @@ function ApprovalsTab() {
 
   const pending = approvals?.filter((a) => a.status === "pending") ?? [];
   const decided = approvals?.filter((a) => a.status !== "pending") ?? [];
-  const pendingProposals = graduations?.filter((g) => g.status === "pending") ?? [];
-  const decidedProposals = graduations?.filter((g) => g.status !== "pending") ?? [];
+  // Earned proposals only — discovered (pattern-mined) ones live in Suggestions.
+  const earned = graduations?.filter((g) => g.source === "streak") ?? [];
+  const pendingProposals = earned.filter((g) => g.status === "pending");
+  const decidedProposals = earned.filter((g) => g.status !== "pending");
 
   return (
     <ScrollArea className="h-full">
@@ -398,6 +401,157 @@ function ApprovalsTab() {
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm text-neutral-600">{a.summary}</span>
                   <StatusPill value={a.status} />
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </ScrollArea>
+  );
+}
+
+// ---- Suggestions -------------------------------------------------------------
+
+// A pattern the miner found in action history: a shape that recurred cleanly but
+// still routes to a human. Candidates are computed live on every poll — nothing
+// persists until an admin promotes one into a real graduation proposal.
+interface SuggestionRow {
+  shapeKey: string;
+  label: string;
+  occurrences: number;
+  threshold: number;
+  ticketNumbers: number[];
+  lastSeenAt: string;
+  blockedBy: { policyId: string | null; name: string };
+  windowDays: number;
+}
+
+function SuggestionsTab() {
+  const { data: candidates } = useSWR<SuggestionRow[]>("/api/suggestions", fetcher, POLL);
+  const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const promote = async (shapeKey: string) => {
+    setBusy(shapeKey);
+    setError(null);
+    try {
+      const res = await postJson("/api/suggestions/promote", { shapeKey });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      // The candidate card swaps for its proposal card in place.
+      await Promise.all([
+        mutate("/api/suggestions"),
+        mutate("/api/graduations"),
+        mutate("/api/trust"),
+        mutate("/api/audit"),
+      ]);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const decideProposal = async (id: string, decision: "accepted" | "declined") => {
+    setBusy(id);
+    setError(null);
+    try {
+      const res = await postJson(`/api/graduations/${id}`, { decision });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      await Promise.all([
+        mutate("/api/suggestions"),
+        mutate("/api/graduations"),
+        mutate("/api/policies"),
+        mutate("/api/audit"),
+        mutate("/api/trust"),
+      ]);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const mined = graduations?.filter((g) => g.source === "pattern_miner") ?? [];
+  const pendingMined = mined.filter((g) => g.status === "pending");
+  const decidedMined = mined.filter((g) => g.status !== "pending");
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="flex flex-col gap-2 p-4">
+        <p className="text-xs text-neutral-500">
+          Patterns mined from action history: shapes that keep getting approved cleanly
+          but still route to a human. Approvals shows autonomy the agent earned;
+          this shows autonomy the system discovered. Nothing activates without your accept.
+        </p>
+        {error && <ErrorBanner message={error} />}
+        {(!candidates || !graduations) && <SkeletonRows />}
+        {candidates &&
+          graduations &&
+          candidates.length === 0 &&
+          pendingMined.length === 0 && (
+            <p className="p-6 text-center text-sm text-neutral-500">
+              No patterns yet — as approvals recur, candidates surface here.
+            </p>
+          )}
+        {pendingMined.map((g) => (
+          <ProposalCard
+            key={g.id}
+            proposal={g}
+            busy={busy === g.id}
+            onDecide={decideProposal}
+          />
+        ))}
+        {candidates?.map((c) => (
+          <div key={c.shapeKey} className="rounded-lg border bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
+                  Discovered pattern
+                </div>
+                <div className="mt-0.5 truncate text-sm font-medium">{c.label}</div>
+                <div className="mt-0.5 truncate text-xs text-neutral-500">
+                  {c.occurrences}× approved cleanly in the last {c.windowDays} days
+                  {c.ticketNumbers.length > 0 && (
+                    <> · {c.ticketNumbers.map((n) => `TKT-${n}`).join(" · ")}</>
+                  )}
+                </div>
+                <div className="mt-2 flex items-center gap-2.5">
+                  <StreakBar value={c.occurrences} max={c.threshold} full />
+                  <span className="text-xs text-neutral-500">
+                    blocked by “{c.blockedBy.name}”
+                  </span>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                disabled={busy === c.shapeKey}
+                onClick={() => promote(c.shapeKey)}
+                className="shrink-0 bg-violet-600 hover:bg-violet-700"
+              >
+                Propose graduation
+              </Button>
+            </div>
+          </div>
+        ))}
+        {decidedMined.length > 0 && (
+          <>
+            <p className="mt-3 text-xs font-medium uppercase tracking-wide text-neutral-500">
+              Decided
+            </p>
+            {decidedMined.map((g) => (
+              <div key={g.id} className="rounded-lg border bg-white px-4 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-neutral-600">
+                    Suggestion · {g.label}
+                    {g.deciderNote ? (
+                      <span className="text-neutral-400"> — {g.deciderNote}</span>
+                    ) : null}
+                  </span>
+                  <StatusPill value={g.status} />
                 </div>
               </div>
             ))}
@@ -704,7 +858,7 @@ function TrustTab() {
                       />
                       <span className="text-xs text-neutral-500">
                         {s.status === "proposed"
-                          ? "awaiting review in Approvals"
+                          ? "awaiting review"
                           : `${s.cleanStreak}/${s.threshold} clean approvals`}
                         {s.status === "demoted" && " · re-earning from zero"}
                       </span>
@@ -748,9 +902,16 @@ export function AdminConsole() {
 
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
   const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
+  const { data: suggestions } = useSWR<SuggestionRow[]>("/api/suggestions", fetcher, POLL);
   const pendingCount =
     (approvals?.filter((a) => a.status === "pending").length ?? 0) +
-    (graduations?.filter((g) => g.status === "pending").length ?? 0);
+    (graduations?.filter((g) => g.status === "pending" && g.source === "streak")
+      .length ?? 0);
+  const suggestionCount =
+    (suggestions?.length ?? 0) +
+    (graduations?.filter(
+      (g) => g.status === "pending" && g.source === "pattern_miner",
+    ).length ?? 0);
 
   return (
     <Tabs defaultValue="queue" className="flex min-h-0 flex-1 flex-col gap-0">
@@ -765,6 +926,14 @@ export function AdminConsole() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="suggestions">
+            Suggestions
+            {suggestionCount > 0 && (
+              <span className="ml-1.5 rounded-full bg-violet-500 px-1.5 text-[10px] font-semibold text-white">
+                {suggestionCount}
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="trust">Trust</TabsTrigger>
           <TabsTrigger value="audit">Audit log</TabsTrigger>
           <TabsTrigger value="policies">Policies</TabsTrigger>
@@ -776,6 +945,9 @@ export function AdminConsole() {
       </TabsContent>
       <TabsContent value="approvals" className="min-h-0 flex-1">
         <ApprovalsTab />
+      </TabsContent>
+      <TabsContent value="suggestions" className="min-h-0 flex-1">
+        <SuggestionsTab />
       </TabsContent>
       <TabsContent value="trust" className="min-h-0 flex-1">
         <TrustTab />

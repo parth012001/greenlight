@@ -201,6 +201,7 @@ model GraduationProposal {
   level         String?
   role          String
   policyName    String // display name of the rule accept would create
+  source        String    @default("streak") // "streak" (earned) | "pattern_miner" (discovered)
   evidence      String // serialized JSON: { streak, threshold, ticketNumbers }
   impactPreview String // serialized JSON: rule diff + historical replay summary
   status        String    @default("pending") // "pending" | "accepted" | "declined" | "stale"

@@ -24,6 +24,11 @@ import type { ActionKind } from "@/lib/connectors/types";
 
 type Db = Prisma.TransactionClient | typeof prisma;
 
+// How many recent actions the impact replay evaluates. Seed data must keep the
+// total number of terminal runs under this, or replay previews silently stop
+// seeing the oldest seeded evidence (a test pins the seed budget to it).
+export const REPLAY_WINDOW = 50;
+
 export interface RuleDiff {
   // The rule that currently gates the shape (null policyId = the default-closed rule).
   before: { policyId: string | null; name: string; effect: PolicyEffect };
@@ -118,7 +123,7 @@ export async function buildProposalPayload(
 
   const runs = await db.actionRun.findMany({
     orderBy: { createdAt: "desc" },
-    take: 50,
+    take: REPLAY_WINDOW,
     include: {
       ticket: { include: { requester: { select: { role: true } } } },
     },

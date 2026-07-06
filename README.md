@@ -14,19 +14,22 @@ pnpm dev                                        # → localhost:3000
 ```
 
 Left pane: employee chat (pick a persona — their role changes what policy allows).
-Right pane: the IT console — ticket queue, approval inbox, **Trust ledger**, audit log, policy toggles.
+Right pane: the IT console — ticket queue, approval inbox, **Suggestions**, **Trust ledger**, audit log, policy toggles.
 
-## Two demo moments
+## Three demo moments
 
 **Policy is live, not baked into the model.** Ask for Airtable read-only as Jamie → instant. Ask for editor → lands in Approvals. Now disable "Read-only access: instant" in Policies and ask again — the same request routes to a human. Same model, same prompt; only policy changed.
 
 **Trust is earned, then losable.** Approve Jamie's Airtable-editor request a third time and a graduation proposal pops in Approvals — a policy diff plus a replay of recent actions proving only that exact shape flips. Accept it, and the next identical ask auto-approves with the graduated rule in its trace. Flip the app's "Simulate outage" switch and ask again: the autonomous run fails, autonomy is revoked on the spot, and the shape is back to requiring a human. Every step lands on the audit chain.
+
+**Autonomy the system discovers, not just earns.** The streak engine only counts approvals it watched happen. The pattern miner sweeps recorded action history — including history imported from before the trust ledger existed — for shapes that recurred cleanly and still route to a human. On first load, Suggestions surfaces one: Jamie's read-only Salesforce ask, approved six times and re-requested every time her seat gets reclaimed. Promote it and the same violet proposal card appears — same diff, same replay, same accept path as an earned graduation. Nothing activates without a human.
 
 ## Architecture decisions
 
 - **The model proposes; the action layer decides.** Every tool that touches the world routes through `requestAction()` (`src/lib/actions.ts`): policy check → execute | queue approval | deny. The LLM is never trusted to enforce policy — its tools physically can't bypass the gate.
 - **Identity comes from the session, never the model.** Tools are built per-request, scoped to the authenticated persona (`buildTools(requesterId)`). The model cannot act as someone else.
 - **Trust is a property of the action shape, not the agent.** A shape is the exact `(kind, appId, level, role)` tuple the policy engine matches on. Streaks accrue per shape, and a graduated rule is maximally narrow, so autonomy earned by one shape can never widen to another. Promotion is by evidence window, never calendar; demotion is one genuinely bad run, re-earned in full. (`src/lib/trust.ts`, `src/lib/graduation.ts`)
+- **Earned and discovered autonomy share one gate.** The pattern miner (`src/lib/suggestions.ts`) finds recurring cleanly-approved shapes in history the streak engine never saw, but it can only *draft* the same graduation proposal the streak path drafts — same policy diff, same replay preview, same human accept, same staleness checks. A denial or failed run inside the mining window disqualifies a shape outright.
 - **Connectors are an interface** (`src/lib/connectors/types.ts`). Sandbox implementations ship by default so the demo is deterministic — realistic latency, a failure-injection path, real state mutations against the Grant table. A real Okta/Google Admin implementation drops in behind the same contract without touching the agent or approval flow.
 - **Audit log is hash-chained.** Each event's hash covers the previous event's hash (`src/lib/audit.ts`), so tampering with history is detectable. Audit events are written by the action layer, never the UI.
 - **Idempotency keys** on actions guard against the model retrying a tool call — a duplicate request returns the original outcome instead of double-executing.
