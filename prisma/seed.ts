@@ -10,6 +10,8 @@ import { auditHash } from "../src/lib/audit";
  */
 export async function seed(prisma: PrismaClient) {
   // Wipe in FK-safe order (idempotent re-seed).
+  await prisma.graduationProposal.deleteMany();
+  await prisma.trustState.deleteMany();
   await prisma.auditEvent.deleteMany();
   await prisma.approval.deleteMany();
   await prisma.actionRun.deleteMany();
