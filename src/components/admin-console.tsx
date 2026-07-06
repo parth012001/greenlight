@@ -6,9 +6,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 const POLL = { refreshInterval: 2500 };
+
+// Loading placeholder rows, rendered while SWR data is still undefined (first paint)
+// so a tab shows structure instead of a blank panel.
+function SkeletonRows({ rows = 4, className = "h-16" }: { rows?: number; className?: string }) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, i) => (
+        <Skeleton key={i} className={`${className} w-full rounded-lg`} />
+      ))}
+    </>
+  );
+}
 
 const STATUS_STYLES: Record<string, string> = {
   solved: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -49,6 +62,7 @@ function QueueTab() {
   return (
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-2 p-4">
+        {!tickets && <SkeletonRows />}
         {tickets?.map((t) => (
           <div key={t.id} className="rounded-lg border bg-white px-4 py-3">
             <div className="flex items-center justify-between gap-2">
@@ -115,7 +129,8 @@ function ApprovalsTab() {
   return (
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-2 p-4">
-        {pending.length === 0 && (
+        {!approvals && <SkeletonRows />}
+        {approvals && pending.length === 0 && (
           <p className="p-6 text-center text-sm text-neutral-500">
             Nothing waiting on you. Sensitive requests will land here.
           </p>
@@ -193,6 +208,12 @@ function AuditTab() {
   return (
     <ScrollArea className="h-full">
       <div className="p-4">
+        {!events && (
+          <div className="flex flex-col gap-2">
+            <SkeletonRows rows={6} className="h-6" />
+          </div>
+        )}
+        {events && events.length > 0 && (
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b text-neutral-500">
@@ -228,6 +249,7 @@ function AuditTab() {
             ))}
           </tbody>
         </table>
+        )}
         {events?.length === 0 && (
           <p className="p-6 text-center text-sm text-neutral-500">No activity yet.</p>
         )}
@@ -277,6 +299,7 @@ function PoliciesTab() {
           First matching rule wins, top to bottom. Toggle a rule and ask the agent again —
           its behavior changes instantly, because policy lives here, not in the model.
         </p>
+        {!policies && <SkeletonRows />}
         {policies?.map((p) => (
           <div
             key={p.id}
