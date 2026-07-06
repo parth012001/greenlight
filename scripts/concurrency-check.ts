@@ -3,6 +3,7 @@
 // (a) confirming the interactive-transaction code doesn't deadlock/SQLITE_BUSY on the
 // better-sqlite3 adapter, and (b) asserting the invariants that the unique constraints
 // and atomic guards enforce. Run against a freshly seeded db:  npx tsx prisma/seed.ts
+import "dotenv/config";
 import { requestAction, resolveApproval } from "../src/lib/actions";
 import { prisma } from "../src/lib/db";
 import { auditHash } from "../src/lib/audit";

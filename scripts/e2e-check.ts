@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { requestAction, resolveApproval } from "../src/lib/actions";
 import { prisma } from "../src/lib/db";
 import { auditHash } from "../src/lib/audit";

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { prisma } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 
@@ -6,6 +6,11 @@ import { Prisma } from "@/generated/prisma/client";
 // event's hash + this event's payload, so any tampering with history breaks the
 // chain and is detectable. Audit events are written by the action layer — the UI
 // only ever reads them.
+//
+// Tamper-EVIDENT vs tamper-RESISTANT: an unkeyed SHA-256 chain is only evident —
+// anyone with DB write access can recompute a self-consistent forged history. Set
+// AUDIT_HMAC_KEY to key the chain with an HMAC so history can't be recomputed
+// without the server-held secret. Unset (dev/demo) falls back to plain SHA-256.
 
 export interface AuditInput {
   actorType: "agent" | "admin" | "system" | "policy";
@@ -33,7 +38,10 @@ export function auditHash(
     detail: string;
   },
 ): string {
-  return createHash("sha256")
+  // Read the key per-call (not at module load) so tests and rotations take effect.
+  const key = process.env.AUDIT_HMAC_KEY;
+  const hasher = key ? createHmac("sha256", key) : createHash("sha256");
+  return hasher
     .update(prevHash)
     .update(e.actorType)
     .update(e.actorId)
