@@ -18,6 +18,7 @@ async function main() {
   await prisma.policy.deleteMany();
   await prisma.app.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.counter.deleteMany();
 
   await prisma.user.createMany({
     data: [
@@ -112,6 +113,10 @@ async function main() {
       messages: { create: { authorType: "system", body: "Assigned a Zoom license (187/200 seats used)" } },
     },
   });
+
+  // Ticket-number sequence starts just past the seeded history (4801, 4802).
+  // Runtime allocation increments this row atomically (see nextTicketNumber).
+  await prisma.counter.create({ data: { name: "ticket", value: 4802 } });
 
   const { createHash } = await import("node:crypto");
   let prevHash = "0".repeat(64);

@@ -52,6 +52,7 @@ model Grant {
   app  App  @relation(fields: [appId], references: [id])
 
   @@index([userId, appId])
+  @@index([appId])
 }
 
 model Ticket {
@@ -69,6 +70,8 @@ model Ticket {
   messages  TicketMessage[]
   actions   ActionRun[]
   approvals Approval[]
+
+  @@index([requesterId])
 }
 
 model TicketMessage {
@@ -79,6 +82,8 @@ model TicketMessage {
   createdAt  DateTime @default(now())
 
   ticket Ticket @relation(fields: [ticketId], references: [id])
+
+  @@index([ticketId])
 }
 
 // Every consequential action the agent attempts, whether it ran or not.
@@ -97,6 +102,8 @@ model ActionRun {
 
   ticket   Ticket    @relation(fields: [ticketId], references: [id])
   approval Approval?
+
+  @@index([ticketId])
 }
 
 // A sensitive action waiting on a human. Approving executes it; denying closes it.
@@ -113,6 +120,8 @@ model Approval {
 
   ticket    Ticket    @relation(fields: [ticketId], references: [id])
   actionRun ActionRun @relation(fields: [actionRunId], references: [id])
+
+  @@index([ticketId])
 }
 
 // First-match-wins rules. Null fields are wildcards. Toggling `enabled` changes
@@ -142,6 +151,16 @@ model AuditEvent {
   targetId   String
   ticketId   String?
   detail     String // serialized JSON
-  prevHash   String
+  prevHash   String   @unique // each hash is "previous" at most once; a concurrent fork violates this and is retried
   hash       String
+
+  @@index([ticketId])
+}
+
+// Atomic monotonic counters (e.g. ticket numbers). One row per name, bumped via
+// `update ... { increment: 1 }`, which is a single atomic write on both SQLite and
+// Postgres — replaces the read-max-then-+1 race in ticket-number allocation.
+model Counter {
+  name  String @id
+  value Int
 }
