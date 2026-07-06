@@ -24,7 +24,7 @@ export const TRUST_THRESHOLDS: Record<ActionKind, number> = {
   reset_password: 3,
   revoke_access: 5,
 };
-const DEFAULT_THRESHOLD = 3;
+export const DEFAULT_THRESHOLD = 3;
 
 const MAX_TX_RETRIES = 5;
 
@@ -225,6 +225,7 @@ async function maybeProposeGraduation(
       level: shape.level ?? null,
       role: shape.role,
       policyName,
+      source: "streak",
       evidence: JSON.stringify({
         streak: state.cleanStreak,
         threshold: state.threshold,
