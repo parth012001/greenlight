@@ -14,15 +14,17 @@ pnpm dev                                        # → localhost:3000
 ```
 
 Left pane: employee chat (pick a persona — their role changes what policy allows).
-Right pane: the IT console — ticket queue, approval inbox, **Suggestions**, **Trust ledger**, audit log, policy toggles.
+Right pane: the IT console — ticket queue, approval inbox, **Suggestions**, **Trust ledger**, **Insights**, audit log, policy toggles.
 
-## Three demo moments
+## Four demo moments
 
 **Policy is live, not baked into the model.** Ask for Airtable read-only as Jamie → instant. Ask for editor → lands in Approvals. Now disable "Read-only access: instant" in Policies and ask again — the same request routes to a human. Same model, same prompt; only policy changed.
 
 **Trust is earned, then losable.** Approve Jamie's Airtable-editor request a third time and a graduation proposal pops in Approvals — a policy diff plus a replay of recent actions proving only that exact shape flips. Accept it, and the next identical ask auto-approves with the graduated rule in its trace. Flip the app's "Simulate outage" switch and ask again: the autonomous run fails, autonomy is revoked on the spot, and the shape is back to requiring a human. Every step lands on the audit chain.
 
 **Autonomy the system discovers, not just earns.** The streak engine only counts approvals it watched happen. The pattern miner sweeps recorded action history — including history imported from before the trust ledger existed — for shapes that recurred cleanly and still route to a human. On first load, Suggestions surfaces one: Jamie's read-only Salesforce ask, approved six times and re-requested every time her seat gets reclaimed. Promote it and the same violet proposal card appears — same diff, same replay, same accept path as an earned graduation. Nothing activates without a human.
+
+**The mechanism becomes a business number.** Insights aggregates the same tables every action already writes: auto-resolution rate (~70% on the seeded week), hours saved (with the minutes-per-action assumption printed right on the tile), autonomous success rate under graduated rules, latency medians, and a 7-day volume chart. Run any action and the numbers move on the next poll; trigger the outage demotion and the success rate visibly drops. No projections — one honest assumption, printed where it's used.
 
 ## Architecture decisions
 
