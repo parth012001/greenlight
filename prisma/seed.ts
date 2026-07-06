@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { fileURLToPath } from "node:url";
-import { PrismaClient } from "../src/generated/prisma/client";
+import { PrismaClient, type Prisma } from "../src/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { auditHash } from "../src/lib/audit";
 
@@ -105,19 +105,20 @@ export async function seed(prisma: PrismaClient) {
     ],
   });
 
-  // A little history so the queue isn't empty on first load.
+  // A little history so the queue isn't empty on first load. Message timestamps
+  // are explicit — they feed the Insights first-response median.
   const t1 = await prisma.ticket.create({
     data: {
       number: 4801, subject: "Dr. Priya Patel · password reset", category: "password",
       status: "solved", requesterId: "priya", createdAt: daysAgo(6),
-      messages: { create: { authorType: "system", body: "Password reset link sent to priya@acme.com; active sessions cleared" } },
+      messages: { create: { authorType: "system", body: "Password reset link sent to priya@acme.com; active sessions cleared", createdAt: new Date(daysAgo(6).getTime() + 50_000) } },
     },
   });
   const t2 = await prisma.ticket.create({
     data: {
       number: 4802, subject: "Jamie Chen · Zoom license", category: "license",
       status: "solved", requesterId: "jamie", createdAt: daysAgo(5),
-      messages: { create: { authorType: "system", body: "Assigned a Zoom license (187/200 seats used)" } },
+      messages: { create: { authorType: "system", body: "Assigned a Zoom license (187/200 seats used)", createdAt: new Date(daysAgo(5).getTime() + 45_000) } },
     },
   });
 
@@ -133,8 +134,8 @@ export async function seed(prisma: PrismaClient) {
       status: "solved", requesterId: "jamie", createdAt: daysAgo(4),
       messages: {
         create: [
-          { authorType: "employee", body: "Editing the campaign tracker for the Q2 pipeline review" },
-          { authorType: "system", body: "Provisioned editor access to Airtable" },
+          { authorType: "employee", body: "Editing the campaign tracker for the Q2 pipeline review", createdAt: daysAgo(4) },
+          { authorType: "system", body: "Provisioned editor access to Airtable", createdAt: new Date(daysAgo(4).getTime() + 19 * 60_000) },
         ],
       },
     },
@@ -145,8 +146,8 @@ export async function seed(prisma: PrismaClient) {
       status: "solved", requesterId: "jamie", createdAt: daysAgo(2),
       messages: {
         create: [
-          { authorType: "employee", body: "Updating owner fields ahead of the territory hand-off" },
-          { authorType: "system", body: "Provisioned editor access to Airtable" },
+          { authorType: "employee", body: "Updating owner fields ahead of the territory hand-off", createdAt: daysAgo(2) },
+          { authorType: "system", body: "Provisioned editor access to Airtable", createdAt: new Date(daysAgo(2).getTime() + 16 * 60_000) },
         ],
       },
     },
@@ -182,12 +183,12 @@ export async function seed(prisma: PrismaClient) {
       {
         ticketId: t3.id, actionRunId: "seed-run-4803", status: "approved",
         summary: "Jamie Chen (gtm) requests editor access to Airtable",
-        decidedBy: "taylor", decidedAt: daysAgo(4), createdAt: daysAgo(4),
+        decidedBy: "taylor", decidedAt: new Date(daysAgo(4).getTime() + 19 * 60_000), createdAt: daysAgo(4),
       },
       {
         ticketId: t4.id, actionRunId: "seed-run-4804", status: "approved",
         summary: "Jamie Chen (gtm) requests editor access to Airtable",
-        decidedBy: "taylor", decidedAt: daysAgo(2), createdAt: daysAgo(2),
+        decidedBy: "taylor", decidedAt: new Date(daysAgo(2).getTime() + 16 * 60_000), createdAt: daysAgo(2),
       },
     ],
   });
@@ -262,6 +263,179 @@ export async function seed(prisma: PrismaClient) {
     sfTickets.push({ id: ticket.id, number });
   }
 
+  // ---- A week of resolved history for the Insights dashboard -----------------
+  // 38 terminal runs, calibrated with the pre-warm history above so a fresh seed
+  // lands at 32/46 ≈ 70% auto-resolved (per kind: resets 16/16, grants 12/24,
+  // licenses 4/6). Total terminal volume stays deliberately under REPLAY_WINDOW
+  // (a test pins the budget) so graduation replay previews see all evidence.
+  // No Grant rows for this history — seats long since reclaimed, and the runtime
+  // tests rely on fresh provisioning. Idempotency keys all carry the run-id
+  // suffix, so no live re-request can collide with a seeded plain key.
+  const bulkAt = (agedDays: number, hourUtc: number) => {
+    if (agedDays === 0) {
+      // Today's entries sit minutes in the past — a fixed hour anchor could
+      // land in the future depending on when the seed runs.
+      return new Date(Date.now() - (hourUtc * 7 + 5) * 60_000);
+    }
+    const d = new Date();
+    d.setUTCHours(hourUtc, 15 + (hourUtc % 3) * 9, 0, 0);
+    d.setUTCDate(d.getUTCDate() - agedDays);
+    return d;
+  };
+  const displayName: Record<string, string> = {
+    jamie: "Jamie Chen", priya: "Dr. Priya Patel", alex: "Alex Rivera",
+  };
+
+  interface BulkSpec {
+    number: number;
+    requesterId: string;
+    kind: string;
+    appId: string | null;
+    level: string | null;
+    outcome: "auto" | "approved" | "denied" | "failed";
+    at: Date;
+    subject: string;
+    category: string;
+    policyId: string;
+    policyName: string;
+    note: string; // the system/agent message on the ticket
+    justification: string | null;
+    decideMinutes?: number; // human latency for approved/denied
+  }
+  const bulk: BulkSpec[] = [];
+  let nextBulkNumber = 4720;
+
+  // 16 self-service password resets — the bread-and-butter auto lane.
+  for (let i = 0; i < 16; i++) {
+    const who = i % 2 === 0 ? "jamie" : "priya";
+    bulk.push({
+      number: nextBulkNumber++, requesterId: who, kind: "reset_password",
+      appId: null, level: null, outcome: "auto", at: bulkAt(6 - (i % 7), 9 + (i % 4)),
+      subject: `${displayName[who]} · password reset`, category: "password",
+      policyId: "password-auto", policyName: "Password resets: instant",
+      note: `Password reset link sent to ${who}@acme.com; active sessions cleared`,
+      justification: null,
+    });
+  }
+  // 12 read-only grants across Airtable and Figma — instant for employees.
+  for (let i = 0; i < 12; i++) {
+    const who = i % 2 === 0 ? "priya" : "jamie";
+    const app = i % 2 === 0 ? "figma" : "airtable";
+    const appName = app === "figma" ? "Figma" : "Airtable";
+    bulk.push({
+      number: nextBulkNumber++, requesterId: who, kind: "grant_access",
+      appId: app, level: "read_only", outcome: "auto", at: bulkAt(6 - (i % 7), 10 + (i % 5)),
+      subject: `${displayName[who]} · read-only access to ${appName}`, category: "access",
+      policyId: "readonly-auto", policyName: "Read-only access: instant for employees",
+      note: `Provisioned read-only access to ${appName}`,
+      justification: `Reviewing the ${appName} workspace for reporting`,
+    });
+  }
+  // 4 Zoom licenses — instant while seats last.
+  for (let i = 0; i < 4; i++) {
+    const who = i % 2 === 0 ? "jamie" : "priya";
+    bulk.push({
+      number: nextBulkNumber++, requesterId: who, kind: "provision_license",
+      appId: "zoom", level: null, outcome: "auto", at: bulkAt(5 - i, 11 + i),
+      subject: `${displayName[who]} · Zoom license`, category: "license",
+      policyId: "license-auto", policyName: "Licenses: instant while seats last",
+      note: "Assigned a Zoom license", justification: null,
+    });
+  }
+  // 2 human-approved editor grants (CLINICAL — a different shape from every
+  // pre-warm, and two clean occurrences keeps the miner deliberately quiet).
+  for (let i = 0; i < 2; i++) {
+    bulk.push({
+      number: nextBulkNumber++, requesterId: "priya", kind: "grant_access",
+      appId: "airtable", level: "editor", outcome: "approved", at: bulkAt(4 - i * 2, 10),
+      subject: "Dr. Priya Patel · editor access to Airtable", category: "access",
+      policyId: "editor-gate", policyName: "Editor access: manager approval",
+      note: "Provisioned editor access to Airtable",
+      justification: "Maintaining the on-call staffing tracker",
+      decideMinutes: 22 + i * 9,
+    });
+  }
+  // 2 denied contractor asks — and a live example of the miner's
+  // disqualification rule (a denial in the window bars the shape).
+  for (let i = 0; i < 2; i++) {
+    bulk.push({
+      number: nextBulkNumber++, requesterId: "alex", kind: "grant_access",
+      appId: "figma", level: "editor", outcome: "denied", at: bulkAt(5 - i * 3, 13),
+      subject: "Alex Rivera · editor access to Figma", category: "access",
+      policyId: "contractor-gate", policyName: "Contractors: everything needs approval",
+      note: "Denied — outside the current contract scope",
+      justification: "Editing handoff files directly",
+      decideMinutes: 9 + i * 5,
+    });
+  }
+  // 2 failed license provisions (upstream rejected) — honest failure volume.
+  for (let i = 0; i < 2; i++) {
+    bulk.push({
+      number: nextBulkNumber++, requesterId: "jamie", kind: "provision_license",
+      appId: "zoom", level: null, outcome: "failed", at: bulkAt(3 - i * 2, 15),
+      subject: "Jamie Chen · Zoom license", category: "license",
+      policyId: "license-auto", policyName: "Licenses: instant while seats last",
+      note: "Upstream rejected the request for Zoom", justification: null,
+    });
+  }
+
+  const bulkTickets: Prisma.TicketCreateManyInput[] = [];
+  const bulkMessages: Prisma.TicketMessageCreateManyInput[] = [];
+  const bulkRuns: Prisma.ActionRunCreateManyInput[] = [];
+  const bulkApprovals: Prisma.ApprovalCreateManyInput[] = [];
+  for (const s of bulk) {
+    const ticketId = `seed-tkt-${s.number}`;
+    const runId = `seed-run-${s.number}`;
+    const decidedAt = s.decideMinutes
+      ? new Date(s.at.getTime() + s.decideMinutes * 60_000)
+      : null;
+    const resolvedAt = decidedAt ?? new Date(s.at.getTime() + 40_000);
+    bulkTickets.push({
+      id: ticketId, number: s.number, subject: s.subject, category: s.category,
+      status: s.outcome === "denied" ? "denied" : s.outcome === "failed" ? "in_progress" : "solved",
+      requesterId: s.requesterId, createdAt: s.at,
+    });
+    if (s.justification) {
+      bulkMessages.push({
+        ticketId, authorType: "employee", body: s.justification, createdAt: s.at,
+      });
+    }
+    bulkMessages.push({
+      ticketId, authorType: "system", body: s.note, createdAt: resolvedAt,
+    });
+    bulkRuns.push({
+      id: runId, ticketId, kind: s.kind,
+      connectorKey: s.kind === "grant_access" ? "okta" : "workspace",
+      input: JSON.stringify({
+        requesterId: s.requesterId, kind: s.kind,
+        ...(s.appId ? { appId: s.appId } : {}),
+        ...(s.level ? { level: s.level } : {}),
+        ...(s.justification ? { justification: s.justification } : {}),
+      }),
+      status: s.outcome === "auto" || s.outcome === "approved" ? "executed" : s.outcome,
+      result:
+        s.outcome === "failed"
+          ? JSON.stringify({ ok: false, summary: s.note, error: "upstream_rejected" })
+          : null,
+      policyId: s.policyId,
+      idempotencyKey: `${s.requesterId}:${s.kind}:${s.appId ?? "-"}:${s.level ?? "-"}:${runId}`,
+      createdAt: s.at,
+      executedAt: s.outcome === "denied" ? null : resolvedAt,
+    });
+    if (s.outcome === "approved" || s.outcome === "denied") {
+      bulkApprovals.push({
+        ticketId, actionRunId: runId, status: s.outcome,
+        summary: `${displayName[s.requesterId]} (${s.requesterId === "alex" ? "contractor" : s.requesterId === "priya" ? "clinical" : "gtm"}) requests ${s.level ?? ""} access to ${s.appId}`,
+        decidedBy: "taylor", createdAt: s.at, decidedAt,
+        deciderNote: s.outcome === "denied" ? "outside contract scope" : null,
+      });
+    }
+  }
+  await prisma.ticket.createMany({ data: bulkTickets });
+  await prisma.ticketMessage.createMany({ data: bulkMessages });
+  await prisma.actionRun.createMany({ data: bulkRuns });
+  await prisma.approval.createMany({ data: bulkApprovals });
+
   // The ledger tells three stories on first load: a shape one approval from
   // graduating, a shape whose override reset its trust, and a riskier kind
   // with a higher bar.
@@ -324,13 +498,72 @@ export async function seed(prisma: PrismaClient) {
       { actorType: "admin", actorId: "taylor", action: "action.executed", targetType: "action", targetId: "grant_access", ticketId: t.id, detail: JSON.stringify({ connector: "Okta (sandbox)", summary: "Provisioned read-only access to Salesforce" }) },
     );
   }
+  // Light per-ticket trails for the bulk history — same event vocabulary the
+  // runtime writes, condensed to the load-bearing entries.
+  for (const s of bulk) {
+    const ticketId = `seed-tkt-${s.number}`;
+    const target = `TKT-${s.number}`;
+    seedEvents.push({
+      actorType: "agent", actorId: "greenlight", action: "ticket.created",
+      targetType: "ticket", targetId: target, ticketId,
+      detail: JSON.stringify({ requester: displayName[s.requesterId], description: s.subject.split(" · ")[1] }),
+    });
+    if (s.outcome === "auto" || s.outcome === "failed") {
+      seedEvents.push(
+        {
+          actorType: "policy", actorId: s.policyId, action: "policy.auto_approve",
+          targetType: "ticket", targetId: target, ticketId,
+          detail: JSON.stringify({ rule: s.policyName }),
+        },
+        {
+          actorType: "agent", actorId: "greenlight",
+          action: s.outcome === "failed" ? "action.failed" : "action.executed",
+          targetType: "action", targetId: s.kind, ticketId,
+          detail: JSON.stringify({
+            connector: s.kind === "grant_access" ? "Okta (sandbox)" : "Google Workspace (sandbox)",
+            summary: s.note,
+          }),
+        },
+      );
+    } else {
+      seedEvents.push(
+        {
+          actorType: "policy", actorId: s.policyId, action: "policy.require_approval",
+          targetType: "ticket", targetId: target, ticketId,
+          detail: JSON.stringify({ rule: s.policyName }),
+        },
+        {
+          actorType: "agent", actorId: "greenlight", action: "approval.requested",
+          targetType: "ticket", targetId: target, ticketId,
+          detail: JSON.stringify({ description: s.subject.split(" · ")[1], rule: s.policyName }),
+        },
+        {
+          actorType: "admin", actorId: "taylor",
+          action: s.outcome === "approved" ? "approval.granted" : "approval.denied",
+          targetType: "approval", targetId: target, ticketId,
+          detail: JSON.stringify({ summary: s.subject }),
+        },
+      );
+      if (s.outcome === "approved") {
+        seedEvents.push({
+          actorType: "admin", actorId: "taylor", action: "action.executed",
+          targetType: "action", targetId: s.kind, ticketId,
+          detail: JSON.stringify({ connector: "Okta (sandbox)", summary: s.note }),
+        });
+      }
+    }
+  }
+  // Hashes are computed sequentially (the chain is order-defined), then written
+  // in one createMany — resetDb() runs before every test, so insert count matters.
+  const auditRows: Prisma.AuditEventCreateManyInput[] = [];
   for (const e of seedEvents) {
     const hash = auditHash(prevHash, e);
-    await prisma.auditEvent.create({ data: { ...e, prevHash, hash } });
+    auditRows.push({ ...e, prevHash, hash });
     prevHash = hash;
   }
+  await prisma.auditEvent.createMany({ data: auditRows });
 
-  return { users: 4, apps: 5, policies: 7, grants: 13, tickets: 10, trustShapes: 3, auditEvents: seedEvents.length };
+  return { users: 4, apps: 5, policies: 7, grants: 13, tickets: 48, trustShapes: 3, auditEvents: seedEvents.length };
 }
 
 async function main() {
