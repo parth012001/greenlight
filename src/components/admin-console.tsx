@@ -31,6 +31,15 @@ const STATUS_STYLES: Record<string, string> = {
   new: "bg-neutral-100 text-neutral-600 border-neutral-200",
   pending: "bg-amber-50 text-amber-700 border-amber-200",
   approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  // graduation proposals
+  accepted: "bg-violet-50 text-violet-700 border-violet-200",
+  declined: "bg-red-50 text-red-700 border-red-200",
+  stale: "bg-neutral-100 text-neutral-600 border-neutral-200",
+  // trust ledger
+  supervised: "bg-neutral-100 text-neutral-600 border-neutral-200",
+  proposed: "bg-violet-50 text-violet-700 border-violet-200",
+  autonomous: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  demoted: "bg-red-50 text-red-700 border-red-200",
 };
 
 function StatusPill({ value }: { value: string }) {
@@ -101,8 +110,130 @@ interface ApprovalRow {
   deciderNote: string | null;
 }
 
+// A graduation proposal as the console sees it — the decision artifact is the
+// parsed policy diff + replay preview.
+interface GraduationRow {
+  id: string;
+  shapeKey: string;
+  label: string;
+  policyName: string;
+  status: string;
+  evidence: { streak?: number; threshold?: number; ticketNumbers?: number[] };
+  impactPreview: {
+    diff: {
+      before: { policyId: string | null; name: string; effect: string };
+      after: { name: string; effect: string; insertBeforePolicyId: string | null };
+    };
+    replay: {
+      runsEvaluated: number;
+      skipped: number;
+      changed: number;
+      onlyTargetShapeChanges: boolean;
+    };
+    computedAt: string;
+  } | null;
+  deciderNote: string | null;
+}
+
+function EffectPill({ effect }: { effect: string }) {
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap ${EFFECT_STYLES[effect] ?? ""}`}
+    >
+      {effect.replace("_", " ")}
+    </span>
+  );
+}
+
+// The graduation card: a policy change as an approval artifact. Shows the rule
+// diff (what gates the shape now → the narrow auto-approve rule accept creates)
+// and the replay line proving the blast radius is exactly this shape.
+function ProposalCard({
+  proposal,
+  busy,
+  onDecide,
+}: {
+  proposal: GraduationRow;
+  busy: boolean;
+  onDecide: (id: string, decision: "accepted" | "declined") => void;
+}) {
+  const preview = proposal.impactPreview;
+  const tickets = proposal.evidence.ticketNumbers ?? [];
+  return (
+    <div className="rounded-lg border border-violet-200 bg-violet-50/50 px-4 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
+            Graduation proposal
+          </div>
+          <div className="mt-0.5 text-sm font-medium">
+            Graduate to auto-approve: {proposal.label}
+          </div>
+          <div className="mt-0.5 text-xs text-neutral-500">
+            {proposal.evidence.streak ?? "?"} clean approvals, no overrides
+            {tickets.length > 0 && <> · {tickets.map((n) => `TKT-${n}`).join(" · ")}</>}
+          </div>
+        </div>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => onDecide(proposal.id, "accepted")}
+            className="bg-violet-600 hover:bg-violet-700"
+          >
+            Accept &amp; create rule
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => onDecide(proposal.id, "declined")}
+          >
+            Decline
+          </Button>
+        </div>
+      </div>
+      {preview && (
+        <div className="mt-2.5 rounded-md border border-violet-100 bg-white px-3 py-2.5 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="w-10 shrink-0 text-neutral-400">now</span>
+            <EffectPill effect={preview.diff.before.effect} />
+            <span className="truncate text-neutral-600">{preview.diff.before.name}</span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="w-10 shrink-0 text-neutral-400">after</span>
+            <EffectPill effect="auto_approve" />
+            <span className="truncate font-medium">{proposal.policyName}</span>
+            <span className="whitespace-nowrap text-neutral-400">
+              {preview.diff.after.insertBeforePolicyId
+                ? "· inserted above the current rule"
+                : "· appended to the rule list"}
+            </span>
+          </div>
+          <p
+            className={`mt-2 border-t border-neutral-100 pt-1.5 ${preview.replay.onlyTargetShapeChanges ? "text-neutral-500" : "font-medium text-red-600"}`}
+          >
+            {preview.replay.onlyTargetShapeChanges ? (
+              <>
+                Replayed the last {preview.replay.runsEvaluated} actions: {preview.replay.changed}{" "}
+                flip to auto-approve — all this exact shape, nothing else changes.
+              </>
+            ) : (
+              <>
+                Replay warning: this change would flip actions beyond the proposed shape —
+                review before accepting.
+              </>
+            )}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ApprovalsTab() {
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
+  const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
 
   const decide = async (id: string, decision: "approved" | "denied") => {
@@ -113,10 +244,33 @@ function ApprovalsTab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ decision }),
       });
+      // Trust + graduations refresh immediately: the approval that crosses a
+      // threshold must pop its proposal card now, not on the next poll.
       await Promise.all([
         mutate("/api/approvals"),
         mutate("/api/tickets"),
         mutate("/api/audit"),
+        mutate("/api/trust"),
+        mutate("/api/graduations"),
+      ]);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const decideProposal = async (id: string, decision: "accepted" | "declined") => {
+    setBusy(id);
+    try {
+      await fetch(`/api/graduations/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      await Promise.all([
+        mutate("/api/graduations"),
+        mutate("/api/policies"),
+        mutate("/api/audit"),
+        mutate("/api/trust"),
       ]);
     } finally {
       setBusy(null);
@@ -125,16 +279,26 @@ function ApprovalsTab() {
 
   const pending = approvals?.filter((a) => a.status === "pending") ?? [];
   const decided = approvals?.filter((a) => a.status !== "pending") ?? [];
+  const pendingProposals = graduations?.filter((g) => g.status === "pending") ?? [];
+  const decidedProposals = graduations?.filter((g) => g.status !== "pending") ?? [];
 
   return (
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-2 p-4">
         {!approvals && <SkeletonRows />}
-        {approvals && pending.length === 0 && (
+        {approvals && pending.length === 0 && pendingProposals.length === 0 && (
           <p className="p-6 text-center text-sm text-neutral-500">
             Nothing waiting on you. Sensitive requests will land here.
           </p>
         )}
+        {pendingProposals.map((g) => (
+          <ProposalCard
+            key={g.id}
+            proposal={g}
+            busy={busy === g.id}
+            onDecide={decideProposal}
+          />
+        ))}
         {pending.map((a) => (
           <div
             key={a.id}
@@ -170,11 +334,24 @@ function ApprovalsTab() {
             </div>
           </div>
         ))}
-        {decided.length > 0 && (
+        {(decided.length > 0 || decidedProposals.length > 0) && (
           <>
             <p className="mt-3 text-xs font-medium uppercase tracking-wide text-neutral-500">
               Decided
             </p>
+            {decidedProposals.map((g) => (
+              <div key={g.id} className="rounded-lg border bg-white px-4 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-neutral-600">
+                    Graduation · {g.label}
+                    {g.deciderNote ? (
+                      <span className="text-neutral-400"> — {g.deciderNote}</span>
+                    ) : null}
+                  </span>
+                  <StatusPill value={g.status} />
+                </div>
+              </div>
+            ))}
             {decided.map((a) => (
               <div key={a.id} className="rounded-lg border bg-white px-4 py-2.5">
                 <div className="flex items-center justify-between gap-2">
@@ -274,8 +451,16 @@ const EFFECT_STYLES: Record<string, string> = {
   deny: "bg-red-50 text-red-700 border-red-200",
 };
 
+interface AppRow {
+  id: string;
+  name: string;
+  connectorKey: string;
+  simulateFailure: boolean;
+}
+
 function PoliciesTab() {
   const { data: policies } = useSWR<PolicyRow[]>("/api/policies", fetcher, POLL);
+  const { data: apps } = useSWR<AppRow[]>("/api/apps", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
 
   const toggle = async (id: string, enabled: boolean) => {
@@ -287,6 +472,20 @@ function PoliciesTab() {
         body: JSON.stringify({ enabled }),
       });
       await Promise.all([mutate("/api/policies"), mutate("/api/audit")]);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleOutage = async (id: string, simulateFailure: boolean) => {
+    setBusy(id);
+    try {
+      await fetch(`/api/apps/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ simulateFailure }),
+      });
+      await Promise.all([mutate("/api/apps"), mutate("/api/audit")]);
     } finally {
       setBusy(null);
     }
@@ -323,6 +522,159 @@ function PoliciesTab() {
             />
           </div>
         ))}
+        {apps && apps.length > 0 && (
+          <>
+            <p className="mt-4 text-xs font-medium uppercase tracking-wide text-neutral-500">
+              Sandbox apps
+            </p>
+            <p className="text-xs text-neutral-500">
+              Simulate an upstream outage: the next action against the app fails — and a
+              failed autonomous run costs that shape its autonomy.
+            </p>
+            {apps.map((a) => (
+              <div
+                key={a.id}
+                className="flex items-center justify-between gap-3 rounded-lg border bg-white px-4 py-2.5"
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="font-medium">{a.name}</span>
+                  {a.simulateFailure && (
+                    <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-medium text-red-700">
+                      outage
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-neutral-400">simulate outage</span>
+                  <Switch
+                    checked={a.simulateFailure}
+                    onCheckedChange={(v) => toggleOutage(a.id, v)}
+                    disabled={busy === a.id}
+                  />
+                </div>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </ScrollArea>
+  );
+}
+
+// ---- Trust ledger --------------------------------------------------------------
+
+interface TrustRow {
+  shapeKey: string;
+  label: string;
+  status: string;
+  cleanStreak: number;
+  threshold: number;
+  streakTicketNumbers: number[];
+  totalApproved: number;
+  totalDenied: number;
+  autonomousRuns: number;
+  updatedAt: string;
+}
+
+function StreakBar({ value, max, full }: { value: number; max: number; full?: boolean }) {
+  const pct = full ? 100 : Math.min(100, Math.round((value / max) * 100));
+  return (
+    <div className="h-1.5 w-36 overflow-hidden rounded-full bg-neutral-200/70">
+      <div
+        className="h-full rounded-full bg-violet-500 transition-all"
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
+
+// Per-shape journey from supervised to autonomous — and back, when trust is lost.
+function TrustTab() {
+  const { data: shapes } = useSWR<TrustRow[]>("/api/trust", fetcher, POLL);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const revoke = async (shapeKey: string) => {
+    setBusy(shapeKey);
+    try {
+      await fetch("/api/trust/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shapeKey }),
+      });
+      await Promise.all([
+        mutate("/api/trust"),
+        mutate("/api/policies"),
+        mutate("/api/audit"),
+      ]);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="flex flex-col gap-2 p-4">
+        <p className="text-xs text-neutral-500">
+          Trust is earned per action shape, never assumed. Clean approvals build a streak;
+          at the bar, the system proposes autonomy with the policy diff as the approval
+          artifact. One bad autonomous run — or one click here — revokes it.
+        </p>
+        {!shapes && <SkeletonRows />}
+        {shapes?.length === 0 && (
+          <p className="p-6 text-center text-sm text-neutral-500">
+            No trust history yet — approvals build per-shape track records here.
+          </p>
+        )}
+        {shapes?.map((s) => (
+          <div key={s.shapeKey} className="rounded-lg border bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="truncate text-sm font-medium">{s.label}</span>
+                  <StatusPill value={s.status} />
+                </div>
+                <div className="mt-2 flex items-center gap-2.5">
+                  {s.status === "autonomous" ? (
+                    <span className="text-xs font-medium text-emerald-700">
+                      {s.autonomousRuns} autonomous {s.autonomousRuns === 1 ? "run" : "runs"} since graduation
+                    </span>
+                  ) : (
+                    <>
+                      <StreakBar
+                        value={s.cleanStreak}
+                        max={s.threshold}
+                        full={s.status === "proposed"}
+                      />
+                      <span className="text-xs text-neutral-500">
+                        {s.status === "proposed"
+                          ? "awaiting review in Approvals"
+                          : `${s.cleanStreak}/${s.threshold} clean approvals`}
+                        {s.status === "demoted" && " · re-earning from zero"}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="mt-1 text-[11px] text-neutral-400">
+                  {s.totalApproved} approved · {s.totalDenied} denied
+                  {s.streakTicketNumbers.length > 0 && (
+                    <> · streak: {s.streakTicketNumbers.map((n) => `TKT-${n}`).join(", ")}</>
+                  )}
+                </div>
+              </div>
+              {s.status === "autonomous" && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy === s.shapeKey}
+                  onClick={() => revoke(s.shapeKey)}
+                  className="shrink-0 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                >
+                  Revoke autonomy
+                </Button>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </ScrollArea>
   );
@@ -338,7 +690,10 @@ export function AdminConsole() {
   }, []);
 
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
-  const pendingCount = approvals?.filter((a) => a.status === "pending").length ?? 0;
+  const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
+  const pendingCount =
+    (approvals?.filter((a) => a.status === "pending").length ?? 0) +
+    (graduations?.filter((g) => g.status === "pending").length ?? 0);
 
   return (
     <Tabs defaultValue="queue" className="flex min-h-0 flex-1 flex-col gap-0">
@@ -353,6 +708,7 @@ export function AdminConsole() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="trust">Trust</TabsTrigger>
           <TabsTrigger value="audit">Audit log</TabsTrigger>
           <TabsTrigger value="policies">Policies</TabsTrigger>
         </TabsList>
@@ -363,6 +719,9 @@ export function AdminConsole() {
       </TabsContent>
       <TabsContent value="approvals" className="min-h-0 flex-1">
         <ApprovalsTab />
+      </TabsContent>
+      <TabsContent value="trust" className="min-h-0 flex-1">
+        <TrustTab />
       </TabsContent>
       <TabsContent value="audit" className="min-h-0 flex-1">
         <AuditTab />
