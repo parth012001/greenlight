@@ -32,16 +32,32 @@ const DEFAULT_DECISION: PolicyDecision = {
   policyName: "Default: unmatched actions require approval",
 };
 
-export async function evaluatePolicy(
-  input: PolicyInput,
-  db: Db = prisma,
-): Promise<PolicyDecision> {
-  const policies = await db.policy.findMany({
-    where: { enabled: true },
-    orderBy: { sortOrder: "asc" },
-  });
+// The subset of a Policy row that matching reads. Kept structural (not the Prisma
+// type) so callers can pass hypothetical in-memory rules — e.g. a graduation
+// proposal previewing "what would change" with a candidate rule spliced in.
+export interface PolicyRule {
+  id: string;
+  name: string;
+  kind: string | null;
+  appId: string | null;
+  level: string | null;
+  role: string | null;
+  effect: string;
+  sortOrder: number;
+  enabled: boolean;
+}
 
-  for (const p of policies) {
+// Pure first-match-wins over an in-memory rule list. Filters + sorts itself so
+// callers can pass raw lists (including candidates with fractional sortOrder).
+export function matchPolicy(
+  input: PolicyInput,
+  policies: PolicyRule[],
+): PolicyDecision {
+  const ordered = policies
+    .filter((p) => p.enabled)
+    .sort((a, b) => a.sortOrder - b.sortOrder);
+
+  for (const p of ordered) {
     const matches =
       (p.kind === null || p.kind === input.kind) &&
       (p.appId === null || p.appId === (input.appId ?? null)) &&
@@ -56,4 +72,15 @@ export async function evaluatePolicy(
     }
   }
   return DEFAULT_DECISION;
+}
+
+export async function evaluatePolicy(
+  input: PolicyInput,
+  db: Db = prisma,
+): Promise<PolicyDecision> {
+  const policies = await db.policy.findMany({
+    where: { enabled: true },
+    orderBy: { sortOrder: "asc" },
+  });
+  return matchPolicy(input, policies);
 }
