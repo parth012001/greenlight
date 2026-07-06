@@ -89,15 +89,52 @@ async function graduatedPolicyIds(db: Db): Promise<Set<string>> {
 }
 
 export async function computeMetrics(db: Db = prisma): Promise<Metrics> {
-  const runs = await db.actionRun.findMany({
-    where: { status: { in: ["executed", "failed", "denied"] } },
-    select: {
-      kind: true,
-      status: true,
-      policyId: true,
-      approval: { select: { status: true } },
-    },
-  });
+  // Volume window bounds are computed up front so the volume read can batch
+  // with the other four. One bucket per UTC day. NOTE: the window is anchored
+  // to request time, while the seed anchors its rows to seed time — the 7-day
+  // chart therefore assumes it is viewed the same UTC day the DB was seeded
+  // (see prisma/seed.ts). The headline tiles are all-time and never drift.
+  const now = new Date();
+  const windowStart = new Date(now);
+  windowStart.setUTCHours(0, 0, 0, 0);
+  windowStart.setUTCDate(windowStart.getUTCDate() - (VOLUME_DAYS - 1));
+
+  // Five independent reads — fire them together, then aggregate in memory.
+  const [runs, gradIds, tickets, approvals, volumeTickets] = await Promise.all([
+    db.actionRun.findMany({
+      where: { status: { in: ["executed", "failed", "denied"] } },
+      select: {
+        kind: true,
+        status: true,
+        policyId: true,
+        approval: { select: { status: true } },
+      },
+    }),
+    graduatedPolicyIds(db),
+    // First response: the first non-employee message on a ticket.
+    db.ticket.findMany({
+      select: {
+        createdAt: true,
+        messages: {
+          orderBy: { createdAt: "asc" },
+          select: { authorType: true, createdAt: true },
+        },
+      },
+    }),
+    db.approval.findMany({
+      where: { decidedAt: { not: null } },
+      select: { createdAt: true, decidedAt: true },
+    }),
+    db.ticket.findMany({
+      where: { createdAt: { gte: windowStart } },
+      select: {
+        createdAt: true,
+        actions: {
+          select: { status: true, approval: { select: { status: true } } },
+        },
+      },
+    }),
+  ]);
 
   // Auto-resolution: executed with no approval row = no human ever touched it.
   const isAuto = (r: (typeof runs)[number]) =>
@@ -120,7 +157,6 @@ export async function computeMetrics(db: Db = prisma): Promise<Metrics> {
     .sort((a, b) => b.terminal - a.terminal);
 
   // Autonomous success: only runs executed under a graduation-created rule.
-  const gradIds = await graduatedPolicyIds(db);
   let autonomousExecuted = 0;
   let autonomousFailed = 0;
   for (const r of runs) {
@@ -130,17 +166,7 @@ export async function computeMetrics(db: Db = prisma): Promise<Metrics> {
   }
   const autonomousTotal = autonomousExecuted + autonomousFailed;
 
-  // First response: the first non-employee message on a ticket — the moment
-  // the requester heard back from the system or a human.
-  const tickets = await db.ticket.findMany({
-    select: {
-      createdAt: true,
-      messages: {
-        orderBy: { createdAt: "asc" },
-        select: { authorType: true, createdAt: true },
-      },
-    },
-  });
+  // First response: the moment the requester heard back from the system or a human.
   const firstResponses: number[] = [];
   for (const t of tickets) {
     const first = t.messages.find((m) => m.authorType !== "employee");
@@ -149,10 +175,6 @@ export async function computeMetrics(db: Db = prisma): Promise<Metrics> {
     if (delta >= 0) firstResponses.push(delta);
   }
 
-  const approvals = await db.approval.findMany({
-    where: { decidedAt: { not: null } },
-    select: { createdAt: true, decidedAt: true },
-  });
   const approvalLatencies = approvals
     .map((a) => a.decidedAt!.getTime() - a.createdAt.getTime())
     .filter((ms) => ms >= 0);
@@ -160,20 +182,6 @@ export async function computeMetrics(db: Db = prisma): Promise<Metrics> {
   // Daily volume, one bucket per UTC day. A ticket counts once: a human "no"
   // outranks a human "yes" outranks an untouched auto run; tickets with no
   // terminal outcome yet (pending, failed-only) stay out of the chart.
-  const now = new Date();
-  const windowStart = new Date(now);
-  windowStart.setUTCHours(0, 0, 0, 0);
-  windowStart.setUTCDate(windowStart.getUTCDate() - (VOLUME_DAYS - 1));
-
-  const volumeTickets = await db.ticket.findMany({
-    where: { createdAt: { gte: windowStart } },
-    select: {
-      createdAt: true,
-      actions: {
-        select: { status: true, approval: { select: { status: true } } },
-      },
-    },
-  });
   const buckets = new Map<string, DailyVolume>();
   for (let i = 0; i < VOLUME_DAYS; i++) {
     const d = new Date(windowStart);

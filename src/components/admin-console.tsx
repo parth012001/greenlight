@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import type { Metrics } from "@/lib/metrics";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 const POLL = { refreshInterval: 2500 };
@@ -892,33 +893,8 @@ function TrustTab() {
 }
 
 // ---- Insights ------------------------------------------------------------------
-
-interface MetricsRow {
-  autoResolution: {
-    autoResolved: number;
-    terminal: number;
-    rate: number | null;
-    byKind: Array<{
-      kind: string;
-      autoResolved: number;
-      terminal: number;
-      rate: number | null;
-    }>;
-  };
-  hoursSaved: { autoResolved: number; minutesPerAction: number; hours: number };
-  autonomous: { executed: number; failed: number; successRate: number | null };
-  latency: {
-    medianFirstResponseMs: number | null;
-    medianApprovalMs: number | null;
-  };
-  dailyVolume: Array<{
-    date: string;
-    auto: number;
-    humanApproved: number;
-    denied: number;
-  }>;
-  computedAt: string;
-}
+// Shape comes straight from computeMetrics() via /api/metrics (Response.json,
+// no reshaping), so we reuse the server type instead of re-declaring it.
 
 function formatPercent(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 100)}%`;
@@ -935,6 +911,9 @@ function formatDuration(ms: number | null): string {
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+// Max stacked-bar height in px. Sits below the h-24 (96px) column container so
+// a full-height stack plus inter-segment gaps never clips.
+const BAR_MAX_PX = 88;
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -953,7 +932,7 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub?: s
 // status vocabulary (emerald = untouched auto, amber = human-approved,
 // red = denied); exact splits ride each column's tooltip.
 function InsightsTab() {
-  const { data: m } = useSWR<MetricsRow>("/api/metrics", fetcher, POLL);
+  const { data: m } = useSWR<Metrics>("/api/metrics", fetcher, POLL);
 
   const maxDay = m
     ? Math.max(1, ...m.dailyVolume.map((d) => d.auto + d.humanApproved + d.denied))
@@ -1069,19 +1048,19 @@ function InsightsTab() {
                               {d.denied > 0 && (
                                 <div
                                   className="w-full bg-red-600"
-                                  style={{ height: `${(d.denied / maxDay) * 88}px` }}
+                                  style={{ height: `${(d.denied / maxDay) * BAR_MAX_PX}px` }}
                                 />
                               )}
                               {d.humanApproved > 0 && (
                                 <div
                                   className="w-full bg-amber-600"
-                                  style={{ height: `${(d.humanApproved / maxDay) * 88}px` }}
+                                  style={{ height: `${(d.humanApproved / maxDay) * BAR_MAX_PX}px` }}
                                 />
                               )}
                               {d.auto > 0 && (
                                 <div
                                   className="w-full bg-emerald-600"
-                                  style={{ height: `${(d.auto / maxDay) * 88}px` }}
+                                  style={{ height: `${(d.auto / maxDay) * BAR_MAX_PX}px` }}
                                 />
                               )}
                             </div>

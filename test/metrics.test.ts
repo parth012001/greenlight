@@ -1,10 +1,23 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { prisma, resetDb, auditChainIntact } from "./helpers";
 import { computeMetrics, MINUTES_SAVED_PER_AUTO, VOLUME_DAYS } from "@/lib/metrics";
 import { REPLAY_WINDOW } from "@/lib/graduation";
 import { mineSuggestions } from "@/lib/suggestions";
 import { requestAction, resolveApproval } from "@/lib/actions";
 import { acceptGraduation } from "@/lib/graduation";
+
+// Pin the clock (Date only — timers stay real so async DB calls are unaffected)
+// so the seed, which anchors rows to "now", and computeMetrics, which anchors
+// the 7-day window to "now", share one instant. Without this, a run that
+// straddles UTC midnight drops the oldest seeded day out of the windowed volume
+// chart and flakes the exact-sum assertions below. Registered before resetDb so
+// the seed itself runs under the pinned clock.
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 beforeEach(async () => {
   await resetDb();
