@@ -28,6 +28,7 @@ export async function GET() {
         label: describeShape(shape, p.appId ? appNames.get(p.appId) : undefined),
         policyName: p.policyName,
         status: p.status,
+        source: p.source,
         evidence: safeJsonParse<{
           streak?: number;
           threshold?: number;
