@@ -176,9 +176,16 @@ function ChatSession({ persona }: { persona: Persona }) {
     { refreshInterval: 2000 },
   );
 
-  const send = (text: string) => {
+  const send = async (text: string) => {
     if (!text.trim()) return;
-    sendMessage({ text }, { body: { personaId: persona.id } });
+    // Establish the signed session cookie for this persona before the chat request.
+    // The server derives identity from the cookie, never from the message body.
+    await fetch("/api/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personaId: persona.id }),
+    });
+    sendMessage({ text });
     setInput("");
   };
 

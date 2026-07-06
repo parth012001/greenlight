@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR, { mutate } from "swr";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -298,6 +298,12 @@ function PoliciesTab() {
 // ---- shell -------------------------------------------------------------------
 
 export function AdminConsole() {
+  // Establish the IT-console admin session (demo seam). Approve/deny and policy toggles
+  // require a valid admin session server-side; without it they return 403.
+  useEffect(() => {
+    fetch("/api/session/admin", { method: "POST" }).catch(() => {});
+  }, []);
+
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
   const pendingCount = approvals?.filter((a) => a.status === "pending").length ?? 0;
 

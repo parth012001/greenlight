@@ -9,27 +9,36 @@ import {
 import { anthropic } from "@ai-sdk/anthropic";
 import { SYSTEM_PROMPT } from "@/lib/agent/prompt";
 import { buildTools } from "@/lib/agent/tools";
-import { prisma } from "@/lib/db";
+import { getRequesterId } from "@/lib/session";
 
 export const maxDuration = 60;
 
 export async function POST(req: Request) {
-  const { messages, personaId }: { messages: UIMessage[]; personaId?: string } =
-    await req.json();
+  // Identity comes from the signed session cookie, never from the request body — the
+  // model cannot choose whose behalf it acts on.
+  const requesterId = await getRequesterId();
+  if (!requesterId) {
+    return Response.json(
+      { error: "No active session — pick a persona first." },
+      { status: 401 },
+    );
+  }
 
-  // The requester identity comes from the (demo) session, never from the model.
-  const persona = await prisma.user.findFirst({
-    where: { id: personaId ?? "", isAdmin: false },
-  });
-  if (!persona) {
-    return Response.json({ error: "Unknown persona" }, { status: 400 });
+  let messages: UIMessage[];
+  try {
+    ({ messages } = (await req.json()) as { messages: UIMessage[] });
+  } catch {
+    return Response.json({ error: "invalid JSON body" }, { status: 400 });
+  }
+  if (!Array.isArray(messages)) {
+    return Response.json({ error: "messages must be an array" }, { status: 400 });
   }
 
   const result = streamText({
     model: anthropic("claude-opus-4-8"),
     system: SYSTEM_PROMPT,
     messages: await convertToModelMessages(messages),
-    tools: buildTools(persona.id),
+    tools: buildTools(requesterId),
     stopWhen: isStepCount(8),
   });
 
