@@ -1,14 +1,14 @@
 import "dotenv/config";
+import { fileURLToPath } from "node:url";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { auditHash } from "../src/lib/audit";
 
-const adapter = new PrismaBetterSqlite3({
-  url: process.env.DATABASE_URL ?? "file:./prisma/dev.db",
-});
-const prisma = new PrismaClient({ adapter });
-
-async function main() {
+/**
+ * Wipe and populate a database with the demo dataset. Exported so the test suite
+ * can reset to a known state between tests using the same data the demo runs on.
+ */
+export async function seed(prisma: PrismaClient) {
   // Wipe in FK-safe order (idempotent re-seed).
   await prisma.auditEvent.deleteMany();
   await prisma.approval.deleteMany();
@@ -134,12 +134,29 @@ async function main() {
     prevHash = hash;
   }
 
-  console.log("Seeded: 4 users, 5 apps, 7 policies, 5 grants, 2 tickets, 6 audit events");
+  return { users: 4, apps: 5, policies: 7, grants: 5, tickets: 2, auditEvents: seedEvents.length };
 }
 
-main()
-  .catch((e) => {
+async function main() {
+  const adapter = new PrismaBetterSqlite3({
+    url: process.env.DATABASE_URL ?? "file:./prisma/dev.db",
+  });
+  const prisma = new PrismaClient({ adapter });
+  try {
+    const n = await seed(prisma);
+    console.log(
+      `Seeded: ${n.users} users, ${n.apps} apps, ${n.policies} policies, ${n.grants} grants, ${n.tickets} tickets, ${n.auditEvents} audit events`,
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+// Run only when executed directly (prisma db seed / `tsx prisma/seed.ts`), not when
+// imported by the test suite.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((e) => {
     console.error(e);
     process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+  });
+}
