@@ -90,10 +90,14 @@ export async function seed(prisma: PrismaClient) {
     ],
   });
 
-  // Existing access so lookup_requester has something to show.
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
+
+  // Existing access so lookup_requester has something to show. Jamie's onboarding
+  // Salesforce seat was reclaimed in the quarterly review — which is exactly why
+  // she keeps re-requesting it below, and why the live demo genuinely provisions.
   await prisma.grant.createMany({
     data: [
-      { userId: "jamie", appId: "salesforce", level: "read_only", grantedVia: "onboarding" },
+      { userId: "jamie", appId: "salesforce", level: "read_only", grantedVia: "onboarding", createdAt: daysAgo(40), revokedAt: daysAgo(8) },
       { userId: "jamie", appId: "zoom", level: "member", grantedVia: "onboarding" },
       { userId: "priya", appId: "epic-ehr", level: "clinician", grantedVia: "onboarding" },
       { userId: "priya", appId: "zoom", level: "member", grantedVia: "onboarding" },
@@ -102,7 +106,6 @@ export async function seed(prisma: PrismaClient) {
   });
 
   // A little history so the queue isn't empty on first load.
-  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
   const t1 = await prisma.ticket.create({
     data: {
       number: 4801, subject: "Dr. Priya Patel · password reset", category: "password",
@@ -197,6 +200,68 @@ export async function seed(prisma: PrismaClient) {
     ],
   });
 
+  // Pattern-miner pre-warm: six clean, human-approved read-only Salesforce
+  // grants for Jamie — imported history the trust ledger never watched
+  // (deliberately NO TrustState row), so the streak engine stays silent and the
+  // Suggestions tab discovers the pattern on first load. Salesforce seats are
+  // reclaimed after each cycle (every grant below is revoked), which is both why
+  // the request keeps recurring and why the live post-accept run genuinely
+  // provisions. Every artifact mirrors what requestAction/resolveApproval write.
+  const sfJustifications = [
+    "Pulling Q1 renewals for the pipeline review",
+    "Exporting the account list for territory planning",
+    "Checking opportunity stages for the forecast call",
+    "Read-only look at the enterprise pipeline for QBR prep",
+    "Verifying closed-won accounts for commission reconciliation",
+    "Cross-checking contact owners for the hand-off doc",
+  ];
+  const sfTickets: Array<{ id: string; number: number }> = [];
+  for (let i = 0; i < 6; i++) {
+    const number = 4770 + i;
+    const at = daysAgo(6 - i); // spread daysAgo(6) … daysAgo(1)
+    const justification = sfJustifications[i];
+    const decidedAt = new Date(at.getTime() + (12 + i * 3) * 60_000); // 12–27 min to a human decision
+    const ticket = await prisma.ticket.create({
+      data: {
+        number, subject: "Jamie Chen · read-only access to Salesforce", category: "access",
+        status: "solved", requesterId: "jamie", createdAt: at,
+        messages: {
+          create: [
+            { authorType: "employee", body: justification, createdAt: at },
+            { authorType: "system", body: "Provisioned read-only access to Salesforce", createdAt: decidedAt },
+          ],
+        },
+      },
+    });
+    const runId = `seed-run-${number}`;
+    await prisma.actionRun.create({
+      data: {
+        id: runId, ticketId: ticket.id, kind: "grant_access", connectorKey: "okta",
+        input: JSON.stringify({ requesterId: "jamie", kind: "grant_access", appId: "salesforce", level: "read_only", justification }),
+        status: "executed", policyId: "salesforce-gate",
+        // Latest terminal run holds the plain key; earlier ones carry the suffix.
+        idempotencyKey: i === 5 ? "jamie:grant_access:salesforce:read_only" : `jamie:grant_access:salesforce:read_only:${runId}`,
+        createdAt: at, executedAt: decidedAt,
+      },
+    });
+    await prisma.approval.create({
+      data: {
+        ticketId: ticket.id, actionRunId: runId, status: "approved",
+        summary: "Jamie Chen (gtm) requests read-only access to Salesforce",
+        decidedBy: "taylor", createdAt: at, decidedAt,
+      },
+    });
+    // Seat reclaimed within the day — net zero on the pool, pattern recurs.
+    await prisma.grant.create({
+      data: {
+        userId: "jamie", appId: "salesforce", level: "read_only",
+        grantedVia: `greenlight:TKT-${number}`, createdAt: decidedAt,
+        revokedAt: new Date(decidedAt.getTime() + 12 * 3_600_000),
+      },
+    });
+    sfTickets.push({ id: ticket.id, number });
+  }
+
   // The ledger tells three stories on first load: a shape one approval from
   // graduating, a shape whose override reset its trust, and a riskier kind
   // with a higher bar.
@@ -248,13 +313,24 @@ export async function seed(prisma: PrismaClient) {
     { actorType: "admin", actorId: "taylor", action: "approval.granted", targetType: "approval", targetId: "TKT-4804", ticketId: t4.id, detail: JSON.stringify({ summary: "Jamie Chen (gtm) requests editor access to Airtable" }) },
     { actorType: "admin", actorId: "taylor", action: "action.executed", targetType: "action", targetId: "grant_access", ticketId: t4.id, detail: JSON.stringify({ connector: "Okta (sandbox)", summary: "Provisioned editor access to Airtable" }) },
   ];
+  // The mined pattern's paper trail — the suggestion's evidence tickets resolve
+  // to real, chained history exactly like the streak pre-warm above.
+  for (const t of sfTickets) {
+    seedEvents.push(
+      { actorType: "agent", actorId: "greenlight", action: "ticket.created", targetType: "ticket", targetId: `TKT-${t.number}`, ticketId: t.id, detail: JSON.stringify({ requester: "Jamie Chen", description: "read-only access to Salesforce" }) },
+      { actorType: "policy", actorId: "salesforce-gate", action: "policy.require_approval", targetType: "ticket", targetId: `TKT-${t.number}`, ticketId: t.id, detail: JSON.stringify({ rule: "Salesforce: always human-approved", role: "GTM" }) },
+      { actorType: "agent", actorId: "greenlight", action: "approval.requested", targetType: "ticket", targetId: `TKT-${t.number}`, ticketId: t.id, detail: JSON.stringify({ description: "read-only access to Salesforce", rule: "Salesforce: always human-approved" }) },
+      { actorType: "admin", actorId: "taylor", action: "approval.granted", targetType: "approval", targetId: `TKT-${t.number}`, ticketId: t.id, detail: JSON.stringify({ summary: "Jamie Chen (gtm) requests read-only access to Salesforce" }) },
+      { actorType: "admin", actorId: "taylor", action: "action.executed", targetType: "action", targetId: "grant_access", ticketId: t.id, detail: JSON.stringify({ connector: "Okta (sandbox)", summary: "Provisioned read-only access to Salesforce" }) },
+    );
+  }
   for (const e of seedEvents) {
     const hash = auditHash(prevHash, e);
     await prisma.auditEvent.create({ data: { ...e, prevHash, hash } });
     prevHash = hash;
   }
 
-  return { users: 4, apps: 5, policies: 7, grants: 7, tickets: 4, trustShapes: 3, auditEvents: seedEvents.length };
+  return { users: 4, apps: 5, policies: 7, grants: 13, tickets: 10, trustShapes: 3, auditEvents: seedEvents.length };
 }
 
 async function main() {

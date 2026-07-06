@@ -453,3 +453,98 @@ describe("promoting a suggestion", () => {
     ).toBeUndefined();
   });
 });
+
+// The seeded demo arc: the miner finds the imported Salesforce pattern, one
+// promote + accept flips the shape to autonomous, and the same recurring ask
+// completes on camera without a human. These tests ARE the demo script.
+describe("the demo arc: the seeded salesforce pattern", () => {
+  const SF_SHAPE = "grant_access:salesforce:read_only:GTM";
+  const SF_GRAD_ID = "grad-grant-access-salesforce-read-only-gtm";
+
+  it("a fresh seed surfaces exactly one suggestion: the salesforce pattern", async () => {
+    const candidates = await mineSuggestions();
+    expect(candidates).toHaveLength(1);
+    const [c] = candidates;
+    expect(c.shapeKey).toBe(SF_SHAPE);
+    expect(c.occurrences).toBe(6);
+    expect(c.threshold).toBe(3);
+    expect(c.ticketNumbers).toEqual([4770, 4771, 4772, 4773, 4774, 4775]);
+    expect(c.blockedBy.policyId).toBe("salesforce-gate");
+    // The trust ledger has never seen this shape — surfacing it is the miner's job.
+    expect(
+      await prisma.trustState.findUnique({ where: { shapeKey: SF_SHAPE } }),
+    ).toBeNull();
+  });
+
+  it("promote → accept → the same ask now runs autonomously (the on-camera beat)", async () => {
+    // Before: the shape routes to a human via the salesforce gate.
+    expect(
+      (await evaluatePolicy({ kind: "grant_access", appId: "salesforce", level: "read_only", role: "GTM" })).policyId,
+    ).toBe("salesforce-gate");
+
+    const promoted = await promoteSuggestion(SF_SHAPE, "taylor");
+    expect(promoted.status).toBe("promoted");
+    const { proposalId } = promoted as { proposalId: string };
+    const proposal = await prisma.graduationProposal.findUniqueOrThrow({
+      where: { id: proposalId },
+    });
+    expect(proposal.source).toBe("pattern_miner");
+
+    const accepted = await acceptGraduation(proposalId, "taylor");
+    expect(accepted).toEqual({ status: "accepted", policyId: SF_GRAD_ID });
+
+    // The graduated rule splices above its blocker; the gate still guards
+    // every other salesforce shape, and the other gates are untouched.
+    const grad = await prisma.policy.findUniqueOrThrow({ where: { id: SF_GRAD_ID } });
+    const gate = await prisma.policy.findUniqueOrThrow({ where: { id: "salesforce-gate" } });
+    expect(grad.sortOrder).toBeLessThan(gate.sortOrder);
+    expect(
+      (await evaluatePolicy({ kind: "grant_access", appId: "salesforce", level: "read_only", role: "GTM" })).policyId,
+    ).toBe(SF_GRAD_ID);
+    expect(
+      (await evaluatePolicy({ kind: "grant_access", appId: "salesforce", level: "editor", role: "GTM" })).policyId,
+    ).toBe("salesforce-gate");
+    expect(
+      (await evaluatePolicy({ kind: "grant_access", appId: "salesforce", level: "read_only", role: "CONTRACTOR" })).policyId,
+    ).toBe("contractor-gate");
+    expect(
+      (await evaluatePolicy({ kind: "grant_access", appId: "epic-ehr", level: "read_only", role: "GTM" })).policyId,
+    ).toBe("ehr-gate");
+
+    // Live: the recurring ask completes without a human and genuinely provisions
+    // (every prior seat was reclaimed, so this is a real state change).
+    const auto = await requestAction({
+      requesterId: "jamie",
+      kind: "grant_access",
+      appId: "salesforce",
+      level: "read_only",
+      justification: "Pulling the Q2 renewals list",
+    });
+    expect(auto.status).toBe("completed");
+    expect(
+      await prisma.grant.findFirst({
+        where: { userId: "jamie", appId: "salesforce", level: "read_only", revokedAt: null },
+      }),
+    ).not.toBeNull();
+    const state = await prisma.trustState.findUniqueOrThrow({
+      where: { shapeKey: SF_SHAPE },
+    });
+    expect(state.status).toBe("autonomous");
+    expect(state.autonomousRuns).toBe(1);
+    expect(await auditChainIntact()).toBe(true);
+  });
+
+  it("goes stale if the gate moves between promote and accept", async () => {
+    const promoted = await promoteSuggestion(SF_SHAPE, "taylor");
+    const { proposalId } = promoted as { proposalId: string };
+    // The gate is disabled while the proposal waits — read-only salesforce now
+    // falls through to the blanket read-only auto rule; nothing to apply.
+    await prisma.policy.update({
+      where: { id: "salesforce-gate" },
+      data: { enabled: false },
+    });
+    const result = await acceptGraduation(proposalId, "taylor");
+    expect(result.status).toBe("stale");
+    expect(await prisma.policy.findUnique({ where: { id: SF_GRAD_ID } })).toBeNull();
+  });
+});
