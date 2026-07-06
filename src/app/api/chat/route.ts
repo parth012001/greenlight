@@ -34,6 +34,18 @@ export async function POST(req: Request) {
   });
 
   return createUIMessageStreamResponse({
-    stream: toUIMessageStream({ stream: result.stream }),
+    stream: toUIMessageStream({
+      stream: result.stream,
+      // Default masks all errors to "An error occurred." Surface an actionable message
+      // to the client without leaking internals, and log the real error server-side.
+      onError: (error) => {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (/api[_ -]?key|x-api-key|401|unauthorized/i.test(msg)) {
+          return "Anthropic API key missing or invalid — set ANTHROPIC_API_KEY and restart.";
+        }
+        console.error("[greenlight] chat stream error:", error);
+        return "Greenlight hit an error handling that request. Any ticket it created is preserved — check the IT console.";
+      },
+    }),
   });
 }

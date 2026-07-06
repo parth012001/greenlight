@@ -3,6 +3,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { appendAudit } from "@/lib/audit";
 import { evaluatePolicy } from "@/lib/policy";
 import { getConnector } from "@/lib/connectors/sandbox";
+import { safeJsonParse } from "@/lib/json";
 import type { ActionKind, ConnectorAction } from "@/lib/connectors/types";
 
 // The single gate every consequential action passes through:
@@ -20,7 +21,8 @@ export interface ActionRequest {
 
 export interface ActionOutcome {
   status: "completed" | "pending_approval" | "denied" | "failed";
-  ticketNumber: number;
+  // Absent when the request is rejected before a ticket is created (input validation).
+  ticketNumber?: number;
   summary: string;
   policyApplied: string;
   detail?: string;
@@ -70,8 +72,34 @@ export async function requestAction(req: ActionRequest): Promise<ActionOutcome> 
     where: { id: req.requesterId },
   });
   const app = req.appId
-    ? await prisma.app.findUniqueOrThrow({ where: { id: req.appId } })
+    ? await prisma.app.findUnique({ where: { id: req.appId } })
     : null;
+
+  // appId and level come from the MODEL — validate them at this trust boundary before
+  // anything is persisted or executed. Default-closed policy would gate an unknown
+  // level anyway, but we never want an arbitrary privilege string reaching the
+  // connector or the system of record, and a hallucinated appId should fail cleanly
+  // instead of throwing an opaque stream error.
+  if (req.appId && !app) {
+    return {
+      status: "denied",
+      summary: `No app "${req.appId}" — call list_apps for valid app ids.`,
+      policyApplied: "input validation",
+    };
+  }
+  if (
+    req.kind === "grant_access" &&
+    app &&
+    req.level &&
+    !app.levels.split(",").includes(req.level)
+  ) {
+    return {
+      status: "denied",
+      summary: `"${req.level}" isn't a valid access level for ${app.name} (options: ${app.levels.split(",").join(", ")}).`,
+      policyApplied: "input validation",
+    };
+  }
+
   const description = describeAction(req, app?.name);
   const idempotencyKey = [req.requesterId, req.kind, req.appId ?? "-", req.level ?? "-"].join(":");
   const connectorKey = app?.connectorKey ?? "workspace";
@@ -279,7 +307,8 @@ async function execute(
     where: { id: actionRunId },
     include: { ticket: true },
   });
-  const req = JSON.parse(run.input) as ActionRequest;
+  const req = safeJsonParse<ActionRequest | null>(run.input, null);
+  if (!req) throw new Error(`ActionRun ${run.id} has unparseable input`);
   const connector = getConnector(run.connectorKey);
 
   const connectorAction = {

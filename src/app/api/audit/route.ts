@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { safeJsonParse } from "@/lib/json";
 
 export async function GET() {
   const events = await prisma.auditEvent.findMany({
@@ -13,7 +14,7 @@ export async function GET() {
       actorId: e.actorId,
       action: e.action,
       target: e.targetId,
-      detail: JSON.parse(e.detail),
+      detail: safeJsonParse<Record<string, unknown>>(e.detail, {}),
       hash: e.hash,
       prevHash: e.prevHash,
     })),

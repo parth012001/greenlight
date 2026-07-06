@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { safeJsonParse } from "@/lib/json";
 
 export async function GET() {
   const approvals = await prisma.approval.findMany({
@@ -19,7 +20,7 @@ export async function GET() {
       requester: a.ticket.requester.name,
       role: a.ticket.requester.role,
       kind: a.actionRun.kind,
-      justification: (JSON.parse(a.actionRun.input) as { justification?: string })
+      justification: safeJsonParse<{ justification?: string }>(a.actionRun.input, {})
         .justification,
       decidedBy: a.decidedBy,
       deciderNote: a.deciderNote,
