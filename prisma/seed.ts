@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { PrismaClient } from "../src/generated/prisma/client";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { auditHash } from "../src/lib/audit";
 
 const adapter = new PrismaBetterSqlite3({
   url: process.env.DATABASE_URL ?? "file:./prisma/dev.db",
@@ -118,7 +119,6 @@ async function main() {
   // Runtime allocation increments this row atomically (see nextTicketNumber).
   await prisma.counter.create({ data: { name: "ticket", value: 4802 } });
 
-  const { createHash } = await import("node:crypto");
   let prevHash = "0".repeat(64);
   const seedEvents = [
     { actorType: "agent", actorId: "greenlight", action: "ticket.created", targetType: "ticket", targetId: "TKT-4801", ticketId: t1.id, detail: JSON.stringify({ requester: "Dr. Priya Patel", description: "password reset" }) },
@@ -129,9 +129,7 @@ async function main() {
     { actorType: "agent", actorId: "greenlight", action: "action.executed", targetType: "action", targetId: "provision_license", ticketId: t2.id, detail: JSON.stringify({ connector: "Google Workspace (sandbox)", summary: "Assigned a Zoom license" }) },
   ];
   for (const e of seedEvents) {
-    const hash = createHash("sha256")
-      .update(prevHash).update(e.actorType).update(e.actorId).update(e.action)
-      .update(e.targetType).update(e.targetId).update(e.detail).digest("hex");
+    const hash = auditHash(prevHash, e);
     await prisma.auditEvent.create({ data: { ...e, prevHash, hash } });
     prevHash = hash;
   }

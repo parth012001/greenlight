@@ -1,5 +1,6 @@
 import { requestAction, resolveApproval } from "../src/lib/actions";
 import { prisma } from "../src/lib/db";
+import { auditHash } from "../src/lib/audit";
 
 async function main() {
   // 1. Auto-approve path: Jamie (GTM) → Airtable read-only
@@ -33,11 +34,9 @@ async function main() {
   console.log("5. alex figma editor grant  →", grant ? "EXISTS" : "MISSING");
 
   const events = await prisma.auditEvent.findMany({ orderBy: { id: "asc" } });
-  const { createHash } = await import("node:crypto");
   let prev = "0".repeat(64); let intact = true;
   for (const e of events) {
-    const h = createHash("sha256").update(prev).update(e.actorType).update(e.actorId)
-      .update(e.action).update(e.targetType).update(e.targetId).update(e.detail).digest("hex");
+    const h = auditHash(prev, e);
     if (h !== e.hash || e.prevHash !== prev) { intact = false; break; }
     prev = e.hash;
   }
