@@ -339,12 +339,14 @@ export async function resolveApproval(
     where: { id: approvalId },
     include: { ticket: true },
   });
-  if (approval.status !== "pending") {
-    throw new Error(`Approval ${approvalId} already ${approval.status}`);
-  }
 
-  await prisma.approval.update({
-    where: { id: approvalId },
+  // Atomically claim the approval. The check-then-update version was a TOCTOU: two
+  // concurrent "approved" POSTs both read status === "pending" and both executed the
+  // connector (double grant / double seat / double reset). Here the UPDATE's own
+  // WHERE clause is the guard — only the write that still sees "pending" matches a
+  // row, so exactly one caller proceeds and the connector runs at most once.
+  const claimed = await prisma.approval.updateMany({
+    where: { id: approvalId, status: "pending" },
     data: {
       status: decision,
       decidedBy: deciderId,
@@ -352,6 +354,9 @@ export async function resolveApproval(
       decidedAt: new Date(),
     },
   });
+  if (claimed.count !== 1) {
+    throw new Error(`Approval ${approvalId} already resolved`);
+  }
   await appendAudit({
     actorType: "admin",
     actorId: deciderId,
