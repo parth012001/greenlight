@@ -21,18 +21,22 @@ export async function POST(req: Request) {
     return Response.json({ error: "shapeKey must be a string" }, { status: 400 });
   }
 
-  const state = await prisma.trustState.findUnique({ where: { shapeKey } });
-  if (!state) {
-    return Response.json({ error: "Unknown shape" }, { status: 404 });
-  }
+  try {
+    const state = await prisma.trustState.findUnique({ where: { shapeKey } });
+    if (!state) {
+      return Response.json({ error: "Unknown shape" }, { status: 404 });
+    }
 
-  const result = await demoteShape({
-    shapeKey,
-    actor: { type: "admin", id: adminId },
-    reason: "manual_revoke",
-  });
-  if (!result.demoted) {
-    return Response.json({ error: "Shape is not autonomous" }, { status: 409 });
+    const result = await demoteShape({
+      shapeKey,
+      actor: { type: "admin", id: adminId },
+      reason: "manual_revoke",
+    });
+    if (!result.demoted) {
+      return Response.json({ error: "Shape is not autonomous" }, { status: 409 });
+    }
+    return Response.json({ ok: true });
+  } catch {
+    return Response.json({ error: "Failed to revoke autonomy" }, { status: 500 });
   }
-  return Response.json({ ok: true });
 }
