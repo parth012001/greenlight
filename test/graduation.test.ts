@@ -9,8 +9,11 @@ beforeEach(async () => {
   await resetDb();
 });
 
-const JAMIE_KEY = "grant_access:airtable:editor:GTM";
-const GRAD_ID = "grad-grant-access-airtable-editor-gtm";
+// The mechanism tests use a shape with NO seeded history (figma editor for GTM),
+// so thresholds are exercised from zero. The seed pre-warms airtable editor at
+// 2/3 — that shape gets its own demo-arc test below.
+const SHAPE_KEY = "grant_access:figma:editor:GTM";
+const GRAD_ID = "grad-grant-access-figma-editor-gtm";
 
 async function pendingApprovalFor(ticketNumber: number) {
   const ticket = await prisma.ticket.findUniqueOrThrow({
@@ -45,19 +48,19 @@ async function pendingProposal() {
 describe("graduation proposals", () => {
   it("three clean approvals propose graduating the shape — exactly once", async () => {
     const tickets = [
-      await approveCycle("jamie", "airtable", "editor"),
-      await approveCycle("jamie", "airtable", "editor"),
-      await approveCycle("jamie", "airtable", "editor"),
+      await approveCycle("jamie", "figma", "editor"),
+      await approveCycle("jamie", "figma", "editor"),
+      await approveCycle("jamie", "figma", "editor"),
     ];
 
     const proposal = await pendingProposal();
-    expect(proposal.shapeKey).toBe(JAMIE_KEY);
+    expect(proposal.shapeKey).toBe(SHAPE_KEY);
     const evidence = JSON.parse(proposal.evidence);
     expect(evidence.streak).toBe(3);
     expect(evidence.ticketNumbers).toEqual(tickets);
 
     const state = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(state.status).toBe("proposed");
 
@@ -67,7 +70,7 @@ describe("graduation proposals", () => {
     expect(proposed).not.toBeNull();
 
     // A fourth clean approval while the proposal is pending must not spawn another.
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
     expect(
       await prisma.graduationProposal.count({ where: { status: "pending" } }),
     ).toBe(1);
@@ -126,10 +129,22 @@ describe("graduation proposals", () => {
     expect(await auditChainIntact()).toBe(true);
   });
 
+  it("the pre-warmed demo shape proposes after ONE live approval, citing seeded evidence", async () => {
+    // Seed leaves grant_access:airtable:editor:GTM at 2/3 with TKT-4803/4804
+    // already in the streak — the on-camera arc is a single approval away.
+    const live = await approveCycle("jamie", "airtable", "editor");
+
+    const proposal = await pendingProposal();
+    expect(proposal.shapeKey).toBe("grant_access:airtable:editor:GTM");
+    const evidence = JSON.parse(proposal.evidence);
+    expect(evidence.streak).toBe(3);
+    expect(evidence.ticketNumbers).toEqual([4803, 4804, live]);
+  });
+
   it("the impact preview replays history: only the target shape flips", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
 
     const proposal = await pendingProposal();
     const preview = JSON.parse(proposal.impactPreview) as ImpactPreview;
@@ -140,7 +155,7 @@ describe("graduation proposals", () => {
     expect(preview.replay.changed).toBe(3);
     expect(preview.replay.onlyTargetShapeChanges).toBe(true);
     for (const flip of preview.replay.flips) {
-      expect(flip.shapeKey).toBe(JAMIE_KEY);
+      expect(flip.shapeKey).toBe(SHAPE_KEY);
       expect(flip.from).toBe("require_approval");
       expect(flip.to).toBe("auto_approve");
     }
@@ -149,9 +164,9 @@ describe("graduation proposals", () => {
 
 describe("accepting a graduation", () => {
   it("inserts the graduated rule before its blocker and flips only the exact shape", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const proposal = await pendingProposal();
 
     const result = await acceptGraduation(proposal.id, "taylor");
@@ -172,17 +187,17 @@ describe("accepting a graduation", () => {
 
     // The graduated rule is maximally narrow: only the exact shape flips.
     expect(
-      (await evaluatePolicy({ kind: "grant_access", appId: "airtable", level: "editor", role: "GTM" })).policyId,
+      (await evaluatePolicy({ kind: "grant_access", appId: "figma", level: "editor", role: "GTM" })).policyId,
     ).toBe(GRAD_ID);
     expect(
-      (await evaluatePolicy({ kind: "grant_access", appId: "airtable", level: "editor", role: "CONTRACTOR" })).policyId,
+      (await evaluatePolicy({ kind: "grant_access", appId: "figma", level: "editor", role: "CONTRACTOR" })).policyId,
     ).toBe("contractor-gate");
     expect(
-      (await evaluatePolicy({ kind: "grant_access", appId: "figma", level: "editor", role: "GTM" })).policyId,
+      (await evaluatePolicy({ kind: "grant_access", appId: "airtable", level: "editor", role: "GTM" })).policyId,
     ).toBe("editor-gate");
 
     const state = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(state.status).toBe("autonomous");
     expect(state.graduatedPolicyId).toBe(GRAD_ID);
@@ -198,13 +213,13 @@ describe("accepting a graduation", () => {
     const auto = await requestAction({
       requesterId: "jamie",
       kind: "grant_access",
-      appId: "airtable",
+      appId: "figma",
       level: "editor",
       justification: "recurring team need",
     });
     expect(auto.status).toBe("completed");
     const after = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(after.autonomousRuns).toBe(1);
   });
@@ -236,19 +251,19 @@ describe("accepting a graduation", () => {
   });
 
   it("goes stale instead of applying when the policy environment changed", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const proposal = await pendingProposal();
 
     // An admin hand-adds an auto rule for the shape while the proposal waits.
     await prisma.policy.create({
       data: {
         id: "manual-auto",
-        name: "Manually opened: GTM Airtable editor",
+        name: "Manually opened: GTM Figma editor",
         description: "",
         kind: "grant_access",
-        appId: "airtable",
+        appId: "figma",
         level: "editor",
         role: "GTM",
         effect: "auto_approve",
@@ -270,7 +285,7 @@ describe("accepting a graduation", () => {
 
     // The evidence wasn't overridden — the environment moved. Streak survives.
     const state = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(state.status).toBe("supervised");
     expect(state.cleanStreak).toBe(3);
@@ -281,9 +296,9 @@ describe("accepting a graduation", () => {
   });
 
   it("a proposal can only be decided once", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const proposal = await pendingProposal();
 
     await declineGraduation(proposal.id, "taylor", "not yet");
@@ -298,37 +313,37 @@ describe("accepting a graduation", () => {
 
 describe("losing and re-earning trust", () => {
   it("decline resets the streak; autonomy is re-earned in full", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const first = await pendingProposal();
 
     await declineGraduation(first.id, "taylor", "one more quarter");
     const state = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(state.status).toBe("supervised");
     expect(state.cleanStreak).toBe(0);
 
     // Re-earn from zero — a fresh streak produces a fresh proposal.
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const second = await pendingProposal();
     expect(second.id).not.toBe(first.id);
     expect(await prisma.graduationProposal.count()).toBe(2);
   });
 
   it("a denial during review invalidates the pending proposal", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const proposal = await pendingProposal();
 
     const r = await requestAction({
       requesterId: "jamie",
       kind: "grant_access",
-      appId: "airtable",
+      appId: "figma",
       level: "editor",
       justification: "one more seat",
     });
@@ -340,29 +355,29 @@ describe("losing and re-earning trust", () => {
     });
     expect(updated.status).toBe("stale");
     const state = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(state.status).toBe("supervised");
     expect(state.cleanStreak).toBe(0);
   });
 
   it("re-graduation after demotion creates a fresh rule and keeps the old as history", async () => {
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const first = await pendingProposal();
     await acceptGraduation(first.id, "taylor");
 
     await demoteShape({
-      shapeKey: JAMIE_KEY,
+      shapeKey: SHAPE_KEY,
       actor: { type: "admin", id: "taylor" },
       reason: "manual_revoke",
     });
 
     // Back under supervision: the same ask routes to a human again.
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
-    await approveCycle("jamie", "airtable", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
+    await approveCycle("jamie", "figma", "editor");
     const second = await pendingProposal();
     const result = await acceptGraduation(second.id, "taylor");
     expect(result).toEqual({ status: "accepted", policyId: `${GRAD_ID}-2` });
@@ -370,7 +385,7 @@ describe("losing and re-earning trust", () => {
     const old = await prisma.policy.findUniqueOrThrow({ where: { id: GRAD_ID } });
     expect(old.enabled).toBe(false);
     const state = await prisma.trustState.findUniqueOrThrow({
-      where: { shapeKey: JAMIE_KEY },
+      where: { shapeKey: SHAPE_KEY },
     });
     expect(state.status).toBe("autonomous");
     expect(state.graduatedPolicyId).toBe(`${GRAD_ID}-2`);

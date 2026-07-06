@@ -102,24 +102,130 @@ export async function seed(prisma: PrismaClient) {
   });
 
   // A little history so the queue isn't empty on first load.
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000);
   const t1 = await prisma.ticket.create({
     data: {
       number: 4801, subject: "Dr. Priya Patel · password reset", category: "password",
-      status: "solved", requesterId: "priya",
+      status: "solved", requesterId: "priya", createdAt: daysAgo(6),
       messages: { create: { authorType: "system", body: "Password reset link sent to priya@acme.com; active sessions cleared" } },
     },
   });
   const t2 = await prisma.ticket.create({
     data: {
       number: 4802, subject: "Jamie Chen · Zoom license", category: "license",
-      status: "solved", requesterId: "jamie",
+      status: "solved", requesterId: "jamie", createdAt: daysAgo(5),
       messages: { create: { authorType: "system", body: "Assigned a Zoom license (187/200 seats used)" } },
     },
   });
 
-  // Ticket-number sequence starts just past the seeded history (4801, 4802).
+  // Trust-ledger pre-warm: two APPROVED editor grants for the same shape
+  // (grant_access:airtable:editor:GTM) with the full runtime artifact trail —
+  // tickets, action runs, approvals, revoked grants, audit events — so the shape
+  // sits at 2/3 on first load and ONE live approval triggers the graduation
+  // proposal. Every piece mirrors exactly what requestAction/resolveApproval
+  // would have written.
+  const t3 = await prisma.ticket.create({
+    data: {
+      number: 4803, subject: "Jamie Chen · editor access to Airtable", category: "access",
+      status: "solved", requesterId: "jamie", createdAt: daysAgo(4),
+      messages: {
+        create: [
+          { authorType: "employee", body: "Editing the campaign tracker for the Q2 pipeline review" },
+          { authorType: "system", body: "Provisioned editor access to Airtable" },
+        ],
+      },
+    },
+  });
+  const t4 = await prisma.ticket.create({
+    data: {
+      number: 4804, subject: "Jamie Chen · editor access to Airtable", category: "access",
+      status: "solved", requesterId: "jamie", createdAt: daysAgo(2),
+      messages: {
+        create: [
+          { authorType: "employee", body: "Updating owner fields ahead of the territory hand-off" },
+          { authorType: "system", body: "Provisioned editor access to Airtable" },
+        ],
+      },
+    },
+  });
+
+  const editorRequest = (justification: string) =>
+    JSON.stringify({
+      requesterId: "jamie", kind: "grant_access", appId: "airtable",
+      level: "editor", justification,
+    });
+  // idempotencyKey mirrors the runtime key-freeing: only the LATEST terminal run
+  // holds the plain key; earlier ones carry the run-id suffix (see requestAction).
+  await prisma.actionRun.create({
+    data: {
+      id: "seed-run-4803", ticketId: t3.id, kind: "grant_access", connectorKey: "okta",
+      input: editorRequest("Editing the campaign tracker for the Q2 pipeline review"),
+      status: "executed", policyId: "editor-gate",
+      idempotencyKey: "jamie:grant_access:airtable:editor:seed-run-4803",
+      createdAt: daysAgo(4), executedAt: daysAgo(4),
+    },
+  });
+  await prisma.actionRun.create({
+    data: {
+      id: "seed-run-4804", ticketId: t4.id, kind: "grant_access", connectorKey: "okta",
+      input: editorRequest("Updating owner fields ahead of the territory hand-off"),
+      status: "executed", policyId: "editor-gate",
+      idempotencyKey: "jamie:grant_access:airtable:editor",
+      createdAt: daysAgo(2), executedAt: daysAgo(2),
+    },
+  });
+  await prisma.approval.createMany({
+    data: [
+      {
+        ticketId: t3.id, actionRunId: "seed-run-4803", status: "approved",
+        summary: "Jamie Chen (gtm) requests editor access to Airtable",
+        decidedBy: "taylor", decidedAt: daysAgo(4), createdAt: daysAgo(4),
+      },
+      {
+        ticketId: t4.id, actionRunId: "seed-run-4804", status: "approved",
+        summary: "Jamie Chen (gtm) requests editor access to Airtable",
+        decidedBy: "taylor", decidedAt: daysAgo(2), createdAt: daysAgo(2),
+      },
+    ],
+  });
+  // Both grants since revoked (projects wrapped), so the live demo genuinely
+  // provisions instead of no-oping on an existing grant. Seat count nets zero.
+  await prisma.grant.createMany({
+    data: [
+      { userId: "jamie", appId: "airtable", level: "editor", grantedVia: "greenlight:TKT-4803", createdAt: daysAgo(4), revokedAt: daysAgo(3) },
+      { userId: "jamie", appId: "airtable", level: "editor", grantedVia: "greenlight:TKT-4804", createdAt: daysAgo(2), revokedAt: daysAgo(1) },
+    ],
+  });
+
+  // The ledger tells three stories on first load: a shape one approval from
+  // graduating, a shape whose override reset its trust, and a riskier kind
+  // with a higher bar.
+  await prisma.trustState.createMany({
+    data: [
+      {
+        shapeKey: "grant_access:airtable:editor:GTM",
+        kind: "grant_access", appId: "airtable", level: "editor", role: "GTM",
+        status: "supervised", threshold: 3, cleanStreak: 2,
+        streakTicketNumbers: "[4803,4804]", totalApproved: 2,
+      },
+      {
+        shapeKey: "grant_access:epic-ehr:clinician:CLINICAL",
+        kind: "grant_access", appId: "epic-ehr", level: "clinician", role: "CLINICAL",
+        status: "supervised", threshold: 3, cleanStreak: 0,
+        totalApproved: 1, totalDenied: 1,
+      },
+      {
+        shapeKey: "revoke_access:figma:-:CONTRACTOR",
+        kind: "revoke_access", appId: "figma", level: null, role: "CONTRACTOR",
+        status: "supervised", threshold: 5, cleanStreak: 0,
+        totalDenied: 1,
+      },
+    ],
+  });
+
+  // Ticket-number sequence starts just past the seeded history (4801–4804).
   // Runtime allocation increments this row atomically (see nextTicketNumber).
-  await prisma.counter.create({ data: { name: "ticket", value: 4802 } });
+  await prisma.counter.create({ data: { name: "ticket", value: 4804 } });
 
   let prevHash = "0".repeat(64);
   const seedEvents = [
@@ -129,6 +235,18 @@ export async function seed(prisma: PrismaClient) {
     { actorType: "agent", actorId: "greenlight", action: "ticket.created", targetType: "ticket", targetId: "TKT-4802", ticketId: t2.id, detail: JSON.stringify({ requester: "Jamie Chen", description: "Zoom license" }) },
     { actorType: "policy", actorId: "license-auto", action: "policy.auto_approve", targetType: "ticket", targetId: "TKT-4802", ticketId: t2.id, detail: JSON.stringify({ rule: "Licenses: instant while seats last" }) },
     { actorType: "agent", actorId: "greenlight", action: "action.executed", targetType: "action", targetId: "provision_license", ticketId: t2.id, detail: JSON.stringify({ connector: "Google Workspace (sandbox)", summary: "Assigned a Zoom license" }) },
+    // The two supervised approvals behind the pre-warmed trust streak — the
+    // proposal's evidence tickets resolve to real, chained history.
+    { actorType: "agent", actorId: "greenlight", action: "ticket.created", targetType: "ticket", targetId: "TKT-4803", ticketId: t3.id, detail: JSON.stringify({ requester: "Jamie Chen", description: "editor access to Airtable" }) },
+    { actorType: "policy", actorId: "editor-gate", action: "policy.require_approval", targetType: "ticket", targetId: "TKT-4803", ticketId: t3.id, detail: JSON.stringify({ rule: "Editor access: manager approval", role: "GTM" }) },
+    { actorType: "agent", actorId: "greenlight", action: "approval.requested", targetType: "ticket", targetId: "TKT-4803", ticketId: t3.id, detail: JSON.stringify({ description: "editor access to Airtable", rule: "Editor access: manager approval" }) },
+    { actorType: "admin", actorId: "taylor", action: "approval.granted", targetType: "approval", targetId: "TKT-4803", ticketId: t3.id, detail: JSON.stringify({ summary: "Jamie Chen (gtm) requests editor access to Airtable" }) },
+    { actorType: "admin", actorId: "taylor", action: "action.executed", targetType: "action", targetId: "grant_access", ticketId: t3.id, detail: JSON.stringify({ connector: "Okta (sandbox)", summary: "Provisioned editor access to Airtable" }) },
+    { actorType: "agent", actorId: "greenlight", action: "ticket.created", targetType: "ticket", targetId: "TKT-4804", ticketId: t4.id, detail: JSON.stringify({ requester: "Jamie Chen", description: "editor access to Airtable" }) },
+    { actorType: "policy", actorId: "editor-gate", action: "policy.require_approval", targetType: "ticket", targetId: "TKT-4804", ticketId: t4.id, detail: JSON.stringify({ rule: "Editor access: manager approval", role: "GTM" }) },
+    { actorType: "agent", actorId: "greenlight", action: "approval.requested", targetType: "ticket", targetId: "TKT-4804", ticketId: t4.id, detail: JSON.stringify({ description: "editor access to Airtable", rule: "Editor access: manager approval" }) },
+    { actorType: "admin", actorId: "taylor", action: "approval.granted", targetType: "approval", targetId: "TKT-4804", ticketId: t4.id, detail: JSON.stringify({ summary: "Jamie Chen (gtm) requests editor access to Airtable" }) },
+    { actorType: "admin", actorId: "taylor", action: "action.executed", targetType: "action", targetId: "grant_access", ticketId: t4.id, detail: JSON.stringify({ connector: "Okta (sandbox)", summary: "Provisioned editor access to Airtable" }) },
   ];
   for (const e of seedEvents) {
     const hash = auditHash(prevHash, e);
@@ -136,7 +254,7 @@ export async function seed(prisma: PrismaClient) {
     prevHash = hash;
   }
 
-  return { users: 4, apps: 5, policies: 7, grants: 5, tickets: 2, auditEvents: seedEvents.length };
+  return { users: 4, apps: 5, policies: 7, grants: 7, tickets: 4, trustShapes: 3, auditEvents: seedEvents.length };
 }
 
 async function main() {
@@ -147,7 +265,7 @@ async function main() {
   try {
     const n = await seed(prisma);
     console.log(
-      `Seeded: ${n.users} users, ${n.apps} apps, ${n.policies} policies, ${n.grants} grants, ${n.tickets} tickets, ${n.auditEvents} audit events`,
+      `Seeded: ${n.users} users, ${n.apps} apps, ${n.policies} policies, ${n.grants} grants, ${n.tickets} tickets, ${n.trustShapes} trust shapes, ${n.auditEvents} audit events`,
     );
   } finally {
     await prisma.$disconnect();
