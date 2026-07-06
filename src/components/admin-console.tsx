@@ -53,7 +53,7 @@ function QueueTab() {
           <div key={t.id} className="rounded-lg border bg-white px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-sm">
-                <span className="font-mono text-xs text-neutral-400">
+                <span className="font-mono text-xs text-neutral-500">
                   TKT-{t.number}
                 </span>
                 <span className="font-medium">{t.subject}</span>
@@ -66,7 +66,7 @@ function QueueTab() {
           </div>
         ))}
         {tickets?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-400">Queue is clear.</p>
+          <p className="p-6 text-center text-sm text-neutral-500">Queue is clear.</p>
         )}
       </div>
     </ScrollArea>
@@ -116,7 +116,7 @@ function ApprovalsTab() {
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-2 p-4">
         {pending.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-400">
+          <p className="p-6 text-center text-sm text-neutral-500">
             Nothing waiting on you. Sensitive requests will land here.
           </p>
         )}
@@ -157,7 +157,7 @@ function ApprovalsTab() {
         ))}
         {decided.length > 0 && (
           <>
-            <p className="mt-3 text-xs font-medium uppercase tracking-wide text-neutral-400">
+            <p className="mt-3 text-xs font-medium uppercase tracking-wide text-neutral-500">
               Decided
             </p>
             {decided.map((a) => (
@@ -195,7 +195,7 @@ function AuditTab() {
       <div className="p-4">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="border-b text-neutral-400">
+            <tr className="border-b text-neutral-500">
               <th className="py-1.5 pr-3 font-medium">actor</th>
               <th className="py-1.5 pr-3 font-medium">action</th>
               <th className="py-1.5 pr-3 font-medium">target</th>
@@ -208,7 +208,7 @@ function AuditTab() {
               <tr key={e.id} className="border-b border-neutral-100 align-top">
                 <td className="py-1.5 pr-3 whitespace-nowrap">
                   <span className="font-medium">{e.actorType}</span>
-                  <span className="text-neutral-400">/{e.actorId}</span>
+                  <span className="text-neutral-500">/{e.actorId}</span>
                 </td>
                 <td className="py-1.5 pr-3 font-mono whitespace-nowrap">{e.action}</td>
                 <td className="py-1.5 pr-3 whitespace-nowrap">{e.target}</td>
@@ -219,7 +219,7 @@ function AuditTab() {
                     ""}
                 </td>
                 <td
-                  className="py-1.5 font-mono text-neutral-300"
+                  className="py-1.5 font-mono text-neutral-500"
                   title={`hash: ${e.hash}\nEach hash covers the previous one — the chain breaks if history is edited.`}
                 >
                   {e.hash.slice(0, 8)}
@@ -228,6 +228,9 @@ function AuditTab() {
             ))}
           </tbody>
         </table>
+        {events?.length === 0 && (
+          <p className="p-6 text-center text-sm text-neutral-500">No activity yet.</p>
+        )}
       </div>
     </ScrollArea>
   );
@@ -251,14 +254,20 @@ const EFFECT_STYLES: Record<string, string> = {
 
 function PoliciesTab() {
   const { data: policies } = useSWR<PolicyRow[]>("/api/policies", fetcher, POLL);
+  const [busy, setBusy] = useState<string | null>(null);
 
   const toggle = async (id: string, enabled: boolean) => {
-    await fetch(`/api/policies/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled }),
-    });
-    await Promise.all([mutate("/api/policies"), mutate("/api/audit")]);
+    setBusy(id);
+    try {
+      await fetch(`/api/policies/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      await Promise.all([mutate("/api/policies"), mutate("/api/audit")]);
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -287,6 +296,7 @@ function PoliciesTab() {
             <Switch
               checked={p.enabled}
               onCheckedChange={(v) => toggle(p.id, v)}
+              disabled={busy === p.id}
             />
           </div>
         ))}
@@ -323,7 +333,7 @@ export function AdminConsole() {
           <TabsTrigger value="audit">Audit log</TabsTrigger>
           <TabsTrigger value="policies">Policies</TabsTrigger>
         </TabsList>
-        <span className="text-xs text-neutral-400">IT console · Taylor Kim</span>
+        <span className="text-xs text-neutral-500">IT console · Taylor Kim</span>
       </div>
       <TabsContent value="queue" className="min-h-0 flex-1">
         <QueueTab />

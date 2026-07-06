@@ -37,7 +37,7 @@ interface ToolPart {
 
 interface ActionOutcome {
   status: "completed" | "pending_approval" | "denied" | "failed";
-  ticketNumber: number;
+  ticketNumber?: number;
   summary: string;
   policyApplied: string;
 }
@@ -74,7 +74,8 @@ function outcomeBadge(outcome: ActionOutcome) {
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${styles[outcome.status]}`}
     >
-      {labels[outcome.status]} · TKT-{outcome.ticketNumber}
+      {labels[outcome.status]}
+      {outcome.ticketNumber ? ` · TKT-${outcome.ticketNumber}` : ""}
     </span>
   );
 }
@@ -106,11 +107,17 @@ function TraceStep({ part }: { part: ToolPart }) {
 
   return (
     <div className="flex items-start gap-2 py-0.5 pl-1 text-sm text-neutral-600">
-      <span className="mt-0.5 text-xs">
-        {failed ? "✕" : done ? "✓" : <span className="animate-pulse">●</span>}
+      <span
+        className="mt-0.5 text-xs"
+        role="img"
+        aria-label={failed ? "failed" : done ? "done" : "in progress"}
+      >
+        <span aria-hidden>
+          {failed ? "✕" : done ? "✓" : <span className="animate-pulse">●</span>}
+        </span>
       </span>
       <div>
-        <span className={done || failed ? "" : "text-neutral-400"}>{label}</span>
+        <span className={done || failed ? "" : "text-neutral-500"}>{label}</span>
         {extra}
         {failed && (
           <div className="text-xs text-red-600">{part.errorText ?? "Tool failed"}</div>
@@ -177,7 +184,7 @@ function ChatSession({ persona }: { persona: Persona }) {
   );
 
   const send = async (text: string) => {
-    if (!text.trim()) return;
+    if (!text.trim() || status !== "ready") return;
     // Establish the signed session cookie for this persona before the chat request.
     // The server derives identity from the cookie, never from the message body.
     await fetch("/api/session", {
@@ -202,7 +209,7 @@ function ChatSession({ persona }: { persona: Persona }) {
       <ScrollArea className="min-h-0 flex-1 px-4 py-3">
         <div className="flex flex-col gap-3">
           {messages.length === 0 && (
-            <div className="mt-6 text-center text-sm text-neutral-400">
+            <div className="mt-6 text-center text-sm text-neutral-500">
               Ask IT anything — access, passwords, licenses.
             </div>
           )}
@@ -210,7 +217,7 @@ function ChatSession({ persona }: { persona: Persona }) {
             <MessageView key={m.id} message={m} />
           ))}
           {status === "submitted" && (
-            <div className="pl-1 text-sm text-neutral-400">
+            <div className="pl-1 text-sm text-neutral-500">
               <span className="animate-pulse">Greenlight is thinking…</span>
             </div>
           )}
@@ -245,7 +252,7 @@ function ChatSession({ persona }: { persona: Persona }) {
               <button
                 key={s}
                 onClick={() => send(s)}
-                className="rounded-full border bg-white px-2.5 py-1 text-xs text-neutral-600 transition-colors hover:border-teal-300 hover:text-teal-700"
+                className="rounded-full border bg-white px-2.5 py-1 text-xs text-neutral-600 transition-colors hover:border-teal-300 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
               >
                 {s}
               </button>
@@ -263,7 +270,7 @@ function ChatSession({ persona }: { persona: Persona }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={`Message as ${persona.name.split(" ")[0]}…`}
-            disabled={status === "streaming"}
+            disabled={status !== "ready"}
           />
           <Button type="submit" disabled={status !== "ready" || !input.trim()}>
             Send
@@ -294,7 +301,8 @@ export function EmployeeChat() {
               key={p.id}
               onClick={() => setPersonaId(p.id)}
               title={`${p.name} — ${p.title} (${p.role})`}
-              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
+              aria-pressed={p.id === personaId}
+              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
                 p.id === personaId
                   ? "border-teal-600 bg-teal-600 text-white"
                   : "bg-white text-neutral-600 hover:border-teal-300"
@@ -309,12 +317,12 @@ export function EmployeeChat() {
         // Remount on persona switch: fresh conversation, fresh identity.
         <ChatSession key={persona.id} persona={persona} />
       ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-neutral-400">
+        <div className="flex flex-1 items-center justify-center text-sm text-neutral-500">
           Loading personas…
         </div>
       )}
-      <div className="border-t bg-neutral-50 px-4 py-1.5 text-[11px] text-neutral-400">
-        <Badge variant="outline" className="mr-2 border-neutral-200 text-[10px] font-normal text-neutral-400">
+      <div className="border-t bg-neutral-50 px-4 py-1.5 text-[11px] text-neutral-500">
+        <Badge variant="outline" className="mr-2 border-neutral-200 text-[10px] font-normal text-neutral-500">
           demo note
         </Badge>
         Identity comes from the session, never the model. Policy is enforced server-side in the action layer.
