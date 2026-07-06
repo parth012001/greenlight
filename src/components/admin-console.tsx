@@ -891,6 +891,218 @@ function TrustTab() {
   );
 }
 
+// ---- Insights ------------------------------------------------------------------
+
+interface MetricsRow {
+  autoResolution: {
+    autoResolved: number;
+    terminal: number;
+    rate: number | null;
+    byKind: Array<{
+      kind: string;
+      autoResolved: number;
+      terminal: number;
+      rate: number | null;
+    }>;
+  };
+  hoursSaved: { autoResolved: number; minutesPerAction: number; hours: number };
+  autonomous: { executed: number; failed: number; successRate: number | null };
+  latency: {
+    medianFirstResponseMs: number | null;
+    medianApprovalMs: number | null;
+  };
+  dailyVolume: Array<{
+    date: string;
+    auto: number;
+    humanApproved: number;
+    denied: number;
+  }>;
+  computedAt: string;
+}
+
+function formatPercent(rate: number | null): string {
+  return rate === null ? "—" : `${Math.round(rate * 100)}%`;
+}
+
+function formatDuration(ms: number | null): string {
+  if (ms === null) return "—";
+  if (ms < 1000) return "<1s";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${(ms / 3_600_000).toFixed(1)}h`;
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-lg border bg-white px-4 py-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+        {label}
+      </div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
+      {sub && <div className="mt-0.5 text-xs text-neutral-500">{sub}</div>}
+    </div>
+  );
+}
+
+// Live business outcomes over the same tables the demo writes — the numbers
+// move on the next poll after an action runs. Colors carry the console's
+// status vocabulary (emerald = untouched auto, amber = human-approved,
+// red = denied); exact splits ride each column's tooltip.
+function InsightsTab() {
+  const { data: m } = useSWR<MetricsRow>("/api/metrics", fetcher, POLL);
+
+  const maxDay = m
+    ? Math.max(1, ...m.dailyVolume.map((d) => d.auto + d.humanApproved + d.denied))
+    : 1;
+
+  return (
+    <ScrollArea className="h-full">
+      <div className="flex flex-col gap-2 p-4">
+        <p className="text-xs text-neutral-500">
+          Coverage and outcomes, live from the action history — run an action and
+          watch the numbers move. Nothing here is a projection except the minutes
+          assumption, which is printed where it&apos;s used.
+        </p>
+        {!m && <SkeletonRows />}
+        {m && (
+          <>
+            <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+              <StatTile
+                label="Auto-resolved"
+                value={formatPercent(m.autoResolution.rate)}
+                sub={`${m.autoResolution.autoResolved} of ${m.autoResolution.terminal} actions, no human touch`}
+              />
+              <StatTile
+                label="Hours saved"
+                value={`${m.hoursSaved.hours.toFixed(1)}h`}
+                sub={`assumes ${m.hoursSaved.minutesPerAction} min of IT time per auto-resolved action`}
+              />
+              <StatTile
+                label="Autonomous success"
+                value={formatPercent(m.autonomous.successRate)}
+                sub={
+                  m.autonomous.executed + m.autonomous.failed === 0
+                    ? "no graduated-rule runs yet"
+                    : `${m.autonomous.executed} ok · ${m.autonomous.failed} failed under graduated rules`
+                }
+              />
+              <StatTile
+                label="Median first response"
+                value={formatDuration(m.latency.medianFirstResponseMs)}
+                sub={`human approval decision ${formatDuration(m.latency.medianApprovalMs)}`}
+              />
+            </div>
+
+            <div className="grid gap-2 lg:grid-cols-2">
+              <div className="rounded-lg border bg-white px-4 py-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+                  Auto-resolution by action kind
+                </div>
+                <div className="mt-2.5 flex flex-col gap-2.5">
+                  {m.autoResolution.byKind.map((k) => (
+                    <div key={k.kind} className="flex items-center gap-2.5">
+                      <span className="w-32 shrink-0 text-xs text-neutral-600">
+                        {k.kind.replace(/_/g, " ")}
+                      </span>
+                      <div
+                        className="h-1.5 flex-1 overflow-hidden rounded-full bg-neutral-200/70"
+                        role="progressbar"
+                        aria-valuenow={k.autoResolved}
+                        aria-valuemin={0}
+                        aria-valuemax={k.terminal}
+                        aria-label={`${k.kind}: ${k.autoResolved} of ${k.terminal} auto-resolved`}
+                      >
+                        <div
+                          className="h-full rounded-full bg-emerald-600 transition-all"
+                          style={{ width: `${(k.rate ?? 0) * 100}%` }}
+                        />
+                      </div>
+                      <span className="w-16 shrink-0 text-right text-xs tabular-nums text-neutral-500">
+                        {k.autoResolved}/{k.terminal}
+                      </span>
+                    </div>
+                  ))}
+                  {m.autoResolution.byKind.length === 0 && (
+                    <p className="text-xs text-neutral-400">No actions yet.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border bg-white px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
+                    Tickets · last 7 days
+                  </div>
+                  <div className="flex items-center gap-3 text-[10px] text-neutral-500">
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-[2px] bg-emerald-600" /> auto
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-[2px] bg-amber-600" /> human-approved
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 rounded-[2px] bg-red-600" /> denied
+                    </span>
+                  </div>
+                </div>
+                <div className="mt-2.5 flex items-end gap-2">
+                  {m.dailyVolume.map((d) => {
+                    const total = d.auto + d.humanApproved + d.denied;
+                    return (
+                      <div
+                        key={d.date}
+                        className="flex flex-1 flex-col items-center gap-1"
+                        title={`${d.date}: ${d.auto} auto · ${d.humanApproved} human-approved · ${d.denied} denied`}
+                      >
+                        <span className="text-[10px] tabular-nums text-neutral-500">
+                          {total > 0 ? total : ""}
+                        </span>
+                        <div className="flex h-24 w-full max-w-8 flex-col justify-end">
+                          {total === 0 ? (
+                            <div className="h-[2px] rounded-full bg-neutral-200/70" />
+                          ) : (
+                            <div className="flex flex-col gap-[2px] overflow-hidden rounded-t-[4px]">
+                              {d.denied > 0 && (
+                                <div
+                                  className="w-full bg-red-600"
+                                  style={{ height: `${(d.denied / maxDay) * 88}px` }}
+                                />
+                              )}
+                              {d.humanApproved > 0 && (
+                                <div
+                                  className="w-full bg-amber-600"
+                                  style={{ height: `${(d.humanApproved / maxDay) * 88}px` }}
+                                />
+                              )}
+                              {d.auto > 0 && (
+                                <div
+                                  className="w-full bg-emerald-600"
+                                  style={{ height: `${(d.auto / maxDay) * 88}px` }}
+                                />
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-neutral-500">
+                          {WEEKDAYS[new Date(`${d.date}T00:00:00Z`).getUTCDay()]}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </ScrollArea>
+  );
+}
+
 // ---- shell -------------------------------------------------------------------
 
 export function AdminConsole() {
@@ -935,6 +1147,7 @@ export function AdminConsole() {
             )}
           </TabsTrigger>
           <TabsTrigger value="trust">Trust</TabsTrigger>
+          <TabsTrigger value="insights">Insights</TabsTrigger>
           <TabsTrigger value="audit">Audit log</TabsTrigger>
           <TabsTrigger value="policies">Policies</TabsTrigger>
         </TabsList>
@@ -951,6 +1164,9 @@ export function AdminConsole() {
       </TabsContent>
       <TabsContent value="trust" className="min-h-0 flex-1">
         <TrustTab />
+      </TabsContent>
+      <TabsContent value="insights" className="min-h-0 flex-1">
+        <InsightsTab />
       </TabsContent>
       <TabsContent value="audit" className="min-h-0 flex-1">
         <AuditTab />
