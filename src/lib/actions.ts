@@ -364,6 +364,7 @@ async function execute(
       await recordAutonomousOutcome({
         policyId: run.policyId,
         ok: result.ok,
+        error: result.error,
         ticketId: run.ticketId,
         ticketNumber: run.ticket.number,
       });

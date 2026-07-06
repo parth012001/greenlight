@@ -130,7 +130,9 @@ export async function recordSupervisedOutcome(
             return;
           }
 
-          // failed
+          // failed — the human approved but execution failed. Count the approval,
+          // interrupt the streak, and if a proposal is pending its evidence no
+          // longer holds: stale it, exactly as an override during review does.
           await tx.trustState.update({
             where: { shapeKey },
             data: {
@@ -139,6 +141,31 @@ export async function recordSupervisedOutcome(
               totalApproved: { increment: 1 },
             },
           });
+          const staled = await tx.graduationProposal.updateMany({
+            where: { shapeKey, status: "pending" },
+            data: { status: "stale", deciderNote: "execution failed during review" },
+          });
+          if (staled.count > 0) {
+            await tx.trustState.updateMany({
+              where: { shapeKey, status: "proposed" },
+              data: { status: "supervised" },
+            });
+            await appendAudit(
+              {
+                actorType: "system",
+                actorId: "trust-engine",
+                action: "graduation.stale",
+                targetType: "shape",
+                targetId: shapeKey,
+                detail: {
+                  reason: "execution_failed_during_review",
+                  ticketNumber: input.ticketNumber,
+                  approverId: input.approverId,
+                },
+              },
+              tx,
+            );
+          }
         },
         { timeout: 10000 },
       );
@@ -224,12 +251,18 @@ async function maybeProposeGraduation(
   );
 }
 
+// Connector failures that are expected business conditions, not faults — e.g. a
+// full seat pool. These interrupt an autonomous run but must NOT revoke earned
+// autonomy; only a genuine fault (outage / upstream rejection) demotes.
+const NON_REVOKING_ERRORS = new Set(["seat_limit_reached"]);
+
 // Called after every agent-initiated (auto-approved) execution. Only shapes whose
 // auto_approve rule came from graduation are tracked — the graduatedPolicyId link
 // is the authoritative test, no id-prefix parsing.
 export async function recordAutonomousOutcome(input: {
   policyId: string;
   ok: boolean;
+  error?: string;
   ticketId: string;
   ticketNumber: number;
 }): Promise<void> {
@@ -246,8 +279,14 @@ export async function recordAutonomousOutcome(input: {
     return;
   }
 
-  // Trust is losable: one bad autonomous run revokes it. The shape falls back to
-  // its original require_approval rule and re-earns the full streak — no fast lane.
+  // A failed run that's an expected business condition (seat pool full, etc.) is
+  // not a fault — autonomy survives. The failure is already on the ActionRun +
+  // audit trail, and an autonomous shape has no supervised streak to reset.
+  if (input.error && NON_REVOKING_ERRORS.has(input.error)) return;
+
+  // Trust is losable: one genuine bad autonomous run revokes it. The shape falls
+  // back to its original require_approval rule and re-earns the full streak — no
+  // fast lane.
   await demoteShape({
     shapeKey: state.shapeKey,
     actor: { type: "system", id: "trust-engine" },
