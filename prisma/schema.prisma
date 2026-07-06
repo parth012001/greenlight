@@ -164,3 +164,51 @@ model Counter {
   name  String @id
   value Int
 }
+
+// Per-action-shape trust ledger: how close each shape (kind+app+level+role — exactly
+// what evaluatePolicy matches on) is to earning auto-approval. shapeKey is the
+// primary key because SQLite doesn't enforce NULL uniqueness in compound uniques;
+// "-" stands in for absent parts (same reasoning as ActionRun.idempotencyKey).
+model TrustState {
+  shapeKey            String   @id // "kind:appId:level:role", "-" for nulls
+  kind                String
+  appId               String?
+  level               String?
+  role                String
+  status              String   @default("supervised") // "supervised" | "proposed" | "autonomous" | "demoted"
+  cleanStreak         Int      @default(0)
+  threshold           Int // snapshotted from TRUST_THRESHOLDS at creation — the documented promotion bar
+  streakTicketNumbers String   @default("[]") // JSON int[] — the evidence tickets behind the current streak
+  totalApproved       Int      @default(0)
+  totalDenied         Int      @default(0)
+  autonomousRuns      Int      @default(0)
+  graduatedPolicyId   String? // the auto_approve rule this shape earned; kept (disabled) after demotion as history
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([graduatedPolicyId])
+}
+
+// A system-proposed policy change awaiting an admin: "this shape earned autonomy —
+// accept to insert the rule below." Deliberately NOT a ticket-bound Approval; the
+// artifact is a policy diff + replay impact preview, not an action summary. Accept
+// inserts a Policy row from the fields stored HERE — never re-derived at accept time.
+model GraduationProposal {
+  id            String    @id @default(cuid())
+  shapeKey      String
+  kind          String
+  appId         String?
+  level         String?
+  role          String
+  policyName    String // display name of the rule accept would create
+  evidence      String // serialized JSON: { streak, threshold, ticketNumbers }
+  impactPreview String // serialized JSON: rule diff + historical replay summary
+  status        String    @default("pending") // "pending" | "accepted" | "declined" | "stale"
+  decidedBy     String?
+  deciderNote   String?
+  decidedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([shapeKey])
+  @@index([status])
+}

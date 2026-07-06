@@ -4,6 +4,12 @@ import { appendAudit } from "@/lib/audit";
 import { evaluatePolicy } from "@/lib/policy";
 import { getConnector } from "@/lib/connectors/sandbox";
 import { safeJsonParse } from "@/lib/json";
+import {
+  recordAutonomousOutcome,
+  recordSupervisedOutcome,
+  type ActionShape,
+  type SupervisedOutcome,
+} from "@/lib/trust";
 import type { ActionKind, ConnectorAction } from "@/lib/connectors/types";
 
 // The single gate every consequential action passes through:
@@ -348,7 +354,37 @@ async function execute(
     result.ok ? "solved" : "in_progress",
     result.ok ? result.summary : `Action failed: ${result.error ?? result.summary}`,
   );
+
+  // Autonomous-run trust tracking: agent-initiated executions under a graduated
+  // policy count toward the shape's track record — and a failed one revokes its
+  // autonomy on the spot. No-op for hand-written policies (the graduatedPolicyId
+  // lookup misses) and for admin-resolved approvals.
+  if (actorType === "agent" && run.policyId) {
+    try {
+      await recordAutonomousOutcome({
+        policyId: run.policyId,
+        ok: result.ok,
+        error: result.error,
+        ticketId: run.ticketId,
+        ticketNumber: run.ticket.number,
+      });
+    } catch (err) {
+      console.error("trust accounting failed (autonomous outcome)", err);
+    }
+  }
   return result;
+}
+
+// Trust bookkeeping must never convert a resolved approval into a 500 — by the
+// time it runs, the decision and any execution already happened; a lost streak
+// increment is the lesser failure. (Same class of gap as the claim→audit window
+// above: a crash between execute() and this call drops one increment.)
+async function trackSupervisedOutcome(input: SupervisedOutcome): Promise<void> {
+  try {
+    await recordSupervisedOutcome(input);
+  } catch (err) {
+    console.error("trust accounting failed (supervised outcome)", err);
+  }
 }
 
 async function closeTicket(db: Db, ticketId: string, status: string, note: string) {
@@ -366,8 +402,20 @@ export async function resolveApproval(
 ) {
   const approval = await prisma.approval.findUniqueOrThrow({
     where: { id: approvalId },
-    include: { ticket: true },
+    include: {
+      ticket: { include: { requester: { select: { role: true } } } },
+      actionRun: true,
+    },
   });
+
+  // The action shape this decision is evidence about — same tuple policy matches on.
+  const runInput = safeJsonParse<ActionRequest | null>(approval.actionRun.input, null);
+  const shape: ActionShape = {
+    kind: approval.actionRun.kind as ActionKind,
+    appId: runInput?.appId ?? null,
+    level: runInput?.level ?? null,
+    role: approval.ticket.requester.role,
+  };
 
   // Atomically claim the approval. The check-then-update version was a TOCTOU: two
   // concurrent "approved" POSTs both read status === "pending" and both executed the
@@ -407,9 +455,21 @@ export async function resolveApproval(
       "denied",
       `Request denied by IT${note ? `: ${note}` : ""}`,
     );
+    await trackSupervisedOutcome({
+      shape,
+      outcome: "denied",
+      ticketNumber: approval.ticket.number,
+      approverId: deciderId,
+    });
     return { executed: false };
   }
 
   const result = await execute(approval.actionRunId, "admin", deciderId);
+  await trackSupervisedOutcome({
+    shape,
+    outcome: result.ok ? "clean" : "failed",
+    ticketNumber: approval.ticket.number,
+    approverId: deciderId,
+  });
   return { executed: result.ok, result };
 }
