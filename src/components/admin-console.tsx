@@ -11,6 +11,30 @@ import { Skeleton } from "@/components/ui/skeleton";
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 const POLL = { refreshInterval: 2500 };
 
+// Fire a mutation and report failure instead of swallowing it. Privileged actions
+// (approve, graduate, revoke, outage) must never silently no-op on a 403/500/network
+// error — the caller surfaces `error` in the UI so the admin knows it didn't take.
+async function postJson(
+  url: string,
+  body: unknown,
+  method: "POST" | "PATCH" = "POST",
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: data.error ?? `Request failed (${res.status})` };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Network error — please retry." };
+  }
+}
+
 // Loading placeholder rows, rendered while SWR data is still undefined (first paint)
 // so a tab shows structure instead of a blank panel.
 function SkeletonRows({ rows = 4, className = "h-16" }: { rows?: number; className?: string }) {
@@ -20,6 +44,19 @@ function SkeletonRows({ rows = 4, className = "h-16" }: { rows?: number; classNa
         <Skeleton key={i} className={`${className} w-full rounded-lg`} />
       ))}
     </>
+  );
+}
+
+// Inline failure notice for a mutation that didn't take — so a silently-failed
+// privileged action can't read as success.
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <p
+      role="alert"
+      className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+    >
+      {message}
+    </p>
   );
 }
 
@@ -162,14 +199,14 @@ function ProposalCard({
   return (
     <div className="rounded-lg border border-violet-200 bg-violet-50/50 px-4 py-3">
       <div className="flex items-center justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
             Graduation proposal
           </div>
-          <div className="mt-0.5 text-sm font-medium">
+          <div className="mt-0.5 truncate text-sm font-medium">
             Graduate to auto-approve: {proposal.label}
           </div>
-          <div className="mt-0.5 text-xs text-neutral-500">
+          <div className="mt-0.5 truncate text-xs text-neutral-500">
             {proposal.evidence.streak ?? "?"} clean approvals, no overrides
             {tickets.length > 0 && <> · {tickets.map((n) => `TKT-${n}`).join(" · ")}</>}
           </div>
@@ -235,15 +272,17 @@ function ApprovalsTab() {
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
   const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const decide = async (id: string, decision: "approved" | "denied") => {
     setBusy(id);
+    setError(null);
     try {
-      await fetch(`/api/approvals/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
-      });
+      const res = await postJson(`/api/approvals/${id}`, { decision });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
       // Trust + graduations refresh immediately: the approval that crosses a
       // threshold must pop its proposal card now, not on the next poll.
       await Promise.all([
@@ -260,12 +299,13 @@ function ApprovalsTab() {
 
   const decideProposal = async (id: string, decision: "accepted" | "declined") => {
     setBusy(id);
+    setError(null);
     try {
-      await fetch(`/api/graduations/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
-      });
+      const res = await postJson(`/api/graduations/${id}`, { decision });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
       await Promise.all([
         mutate("/api/graduations"),
         mutate("/api/policies"),
@@ -285,8 +325,9 @@ function ApprovalsTab() {
   return (
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-2 p-4">
-        {!approvals && <SkeletonRows />}
-        {approvals && pending.length === 0 && pendingProposals.length === 0 && (
+        {error && <ErrorBanner message={error} />}
+        {(!approvals || !graduations) && <SkeletonRows />}
+        {approvals && graduations && pending.length === 0 && pendingProposals.length === 0 && (
           <p className="p-6 text-center text-sm text-neutral-500">
             Nothing waiting on you. Sensitive requests will land here.
           </p>
@@ -462,15 +503,17 @@ function PoliciesTab() {
   const { data: policies } = useSWR<PolicyRow[]>("/api/policies", fetcher, POLL);
   const { data: apps } = useSWR<AppRow[]>("/api/apps", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const toggle = async (id: string, enabled: boolean) => {
     setBusy(id);
+    setError(null);
     try {
-      await fetch(`/api/policies/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
-      });
+      const res = await postJson(`/api/policies/${id}`, { enabled }, "PATCH");
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
       await Promise.all([mutate("/api/policies"), mutate("/api/audit")]);
     } finally {
       setBusy(null);
@@ -479,12 +522,13 @@ function PoliciesTab() {
 
   const toggleOutage = async (id: string, simulateFailure: boolean) => {
     setBusy(id);
+    setError(null);
     try {
-      await fetch(`/api/apps/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ simulateFailure }),
-      });
+      const res = await postJson(`/api/apps/${id}`, { simulateFailure }, "PATCH");
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
       await Promise.all([mutate("/api/apps"), mutate("/api/audit")]);
     } finally {
       setBusy(null);
@@ -498,6 +542,7 @@ function PoliciesTab() {
           First matching rule wins, top to bottom. Toggle a rule and ask the agent again —
           its behavior changes instantly, because policy lives here, not in the model.
         </p>
+        {error && <ErrorBanner message={error} />}
         {!policies && <SkeletonRows />}
         {policies?.map((p) => (
           <div
@@ -519,6 +564,7 @@ function PoliciesTab() {
               checked={p.enabled}
               onCheckedChange={(v) => toggle(p.id, v)}
               disabled={busy === p.id}
+              aria-label={`Toggle policy ${p.name}`}
             />
           </div>
         ))}
@@ -550,6 +596,7 @@ function PoliciesTab() {
                     checked={a.simulateFailure}
                     onCheckedChange={(v) => toggleOutage(a.id, v)}
                     disabled={busy === a.id}
+                    aria-label={`Simulate outage for ${a.name}`}
                   />
                 </div>
               </div>
@@ -579,7 +626,14 @@ interface TrustRow {
 function StreakBar({ value, max, full }: { value: number; max: number; full?: boolean }) {
   const pct = full ? 100 : Math.min(100, Math.round((value / max) * 100));
   return (
-    <div className="h-1.5 w-36 overflow-hidden rounded-full bg-neutral-200/70">
+    <div
+      className="h-1.5 w-36 overflow-hidden rounded-full bg-neutral-200/70"
+      role="progressbar"
+      aria-valuenow={full ? max : value}
+      aria-valuemin={0}
+      aria-valuemax={max}
+      aria-label={`${full ? max : value} of ${max} clean approvals`}
+    >
       <div
         className="h-full rounded-full bg-violet-500 transition-all"
         style={{ width: `${pct}%` }}
@@ -592,15 +646,17 @@ function StreakBar({ value, max, full }: { value: number; max: number; full?: bo
 function TrustTab() {
   const { data: shapes } = useSWR<TrustRow[]>("/api/trust", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const revoke = async (shapeKey: string) => {
     setBusy(shapeKey);
+    setError(null);
     try {
-      await fetch("/api/trust/revoke", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shapeKey }),
-      });
+      const res = await postJson("/api/trust/revoke", { shapeKey });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
       await Promise.all([
         mutate("/api/trust"),
         mutate("/api/policies"),
@@ -619,6 +675,7 @@ function TrustTab() {
           at the bar, the system proposes autonomy with the policy diff as the approval
           artifact. One bad autonomous run — or one click here — revokes it.
         </p>
+        {error && <ErrorBanner message={error} />}
         {!shapes && <SkeletonRows />}
         {shapes?.length === 0 && (
           <p className="p-6 text-center text-sm text-neutral-500">
