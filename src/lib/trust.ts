@@ -2,7 +2,11 @@ import { prisma } from "@/lib/db";
 import { Prisma } from "@/generated/prisma/client";
 import { appendAudit } from "@/lib/audit";
 import { safeJsonParse } from "@/lib/json";
+import { buildProposalPayload } from "@/lib/graduation";
+import { shapeKeyOf, type ActionShape } from "@/lib/shapes";
 import type { ActionKind } from "@/lib/connectors/types";
+
+export { describeShape, shapeKeyOf, shapeKeySlug, type ActionShape } from "@/lib/shapes";
 
 // Trust is earned per action SHAPE — the exact (kind, appId, level, role) tuple
 // evaluatePolicy matches on — never per agent. Every shape starts supervised;
@@ -21,41 +25,6 @@ export const TRUST_THRESHOLDS: Record<ActionKind, number> = {
   revoke_access: 5,
 };
 const DEFAULT_THRESHOLD = 3;
-
-export interface ActionShape {
-  kind: ActionKind;
-  appId?: string | null;
-  level?: string | null;
-  role: string;
-}
-
-// "grant_access:airtable:editor:GTM" — "-" for absent parts. A computed string key
-// because SQLite compound uniques don't enforce NULL uniqueness (idempotencyKey idiom).
-export function shapeKeyOf(shape: ActionShape): string {
-  return [shape.kind, shape.appId ?? "-", shape.level ?? "-", shape.role].join(":");
-}
-
-// Policy-id-safe slug: "grant-access-airtable-editor-gtm"
-export function shapeKeySlug(shapeKey: string): string {
-  return shapeKey
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-export function describeShape(shape: ActionShape, appName?: string): string {
-  const app = appName ?? shape.appId ?? "";
-  switch (shape.kind) {
-    case "grant_access":
-      return `${shape.role} · ${(shape.level ?? "").replace("_", "-")} access to ${app}`;
-    case "revoke_access":
-      return `${shape.role} · revoke access to ${app}`;
-    case "reset_password":
-      return `${shape.role} · password reset`;
-    case "provision_license":
-      return `${shape.role} · ${app} license`;
-  }
-}
 
 const MAX_TX_RETRIES = 5;
 
@@ -181,13 +150,79 @@ export async function recordSupervisedOutcome(
   }
 }
 
-// Placeholder until the graduation engine lands: the trigger point is here (inside
-// the same transaction that bumps the streak) so threshold-crossing and proposal
-// creation can never race apart.
+// The promotion trigger — runs inside the same transaction that bumped the streak,
+// so threshold-crossing and proposal creation can never race apart. Promotion is
+// evidence-driven and exactly-once: the status flip is an atomic claim, and at
+// most one pending proposal can exist per shape (a proposal only spawns from
+// supervised/demoted, and every resolution path leaves "proposed" first).
 async function maybeProposeGraduation(
-  _tx: Prisma.TransactionClient,
-  _shapeKey: string,
-): Promise<void> {}
+  tx: Prisma.TransactionClient,
+  shapeKey: string,
+): Promise<void> {
+  const state = await tx.trustState.findUniqueOrThrow({ where: { shapeKey } });
+  if (state.cleanStreak < state.threshold) return;
+
+  const claimed = await tx.trustState.updateMany({
+    where: {
+      shapeKey,
+      status: { in: ["supervised", "demoted"] },
+      cleanStreak: { gte: state.threshold },
+    },
+    data: { status: "proposed" },
+  });
+  if (claimed.count !== 1) return;
+
+  const shape: ActionShape = {
+    kind: state.kind as ActionKind,
+    appId: state.appId,
+    level: state.level,
+    role: state.role,
+  };
+  const { policyName, impactPreview } = await buildProposalPayload(shape, tx);
+
+  // Only propose if the shape still routes to a human — if an admin already
+  // hand-added an auto rule (or a deny), there is nothing to graduate.
+  if (impactPreview.diff.before.effect !== "require_approval") {
+    await tx.trustState.update({
+      where: { shapeKey },
+      data: { status: state.status },
+    });
+    return;
+  }
+
+  const proposal = await tx.graduationProposal.create({
+    data: {
+      shapeKey,
+      kind: shape.kind,
+      appId: shape.appId ?? null,
+      level: shape.level ?? null,
+      role: shape.role,
+      policyName,
+      evidence: JSON.stringify({
+        streak: state.cleanStreak,
+        threshold: state.threshold,
+        ticketNumbers: safeJsonParse<number[]>(state.streakTicketNumbers, []),
+      }),
+      impactPreview: JSON.stringify(impactPreview),
+    },
+  });
+  await appendAudit(
+    {
+      actorType: "system",
+      actorId: "trust-engine",
+      action: "graduation.proposed",
+      targetType: "proposal",
+      targetId: proposal.id,
+      detail: {
+        shapeKey,
+        streak: state.cleanStreak,
+        threshold: state.threshold,
+        policyName,
+      },
+    },
+    tx,
+  );
+}
 
 // Called after every agent-initiated (auto-approved) execution. Only shapes whose
 // auto_approve rule came from graduation are tracked — the graduatedPolicyId link
