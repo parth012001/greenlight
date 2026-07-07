@@ -7,27 +7,47 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CEREMONY_MS, partitionByCeremony } from "@/components/ceremony";
 import type { Metrics } from "@/lib/metrics";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+// 2500ms poll. Keep in sync with the gl-breathe 2.5s lamp cycle in globals.css —
+// the header signal is meant to beat with the console's heartbeat.
 const POLL = { refreshInterval: 2500 };
+
+// Shared max-width for every tab's content column — one source of truth so the
+// seven tab bodies can't drift apart.
+const COL = "mx-auto w-full max-w-[54rem]";
 
 // The one motion moment: on approve/accept, the card's signal rail turns green
 // and holds briefly before the card moves to Decided. Skipped entirely under
 // prefers-reduced-motion; deny/decline stay instant (no ceremony on a red action).
-const CEREMONY_MS = 800;
 const prefersReducedMotion = () =>
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// Hold the celebrating card while its rail turns green, then release. No-op under
+// prefers-reduced-motion. The caller keeps `busy` set across the hold so the
+// buttons can't double-fire during it.
+async function playCeremony(
+  id: string,
+  setCelebrating: (v: string | null) => void,
+) {
+  if (prefersReducedMotion()) return;
+  setCelebrating(id);
+  await new Promise((r) => setTimeout(r, CEREMONY_MS));
+}
+
 // Fire a mutation and report failure instead of swallowing it. Privileged actions
 // (approve, graduate, revoke, outage) must never silently no-op on a 403/500/network
 // error — the caller surfaces `error` in the UI so the admin knows it didn't take.
-async function postJson(
+// Returns the parsed 2xx body so the caller can also catch no-op successes (a
+// connector that failed, a proposal that went stale) that come back as 200s.
+async function postJson<T = unknown>(
   url: string,
   body: unknown,
   method: "POST" | "PATCH" = "POST",
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   try {
     const res = await fetch(url, {
       method,
@@ -38,7 +58,8 @@ async function postJson(
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: data.error ?? `Request failed (${res.status})` };
     }
-    return { ok: true };
+    const data = (await res.json().catch(() => ({}))) as T;
+    return { ok: true, data };
   } catch {
     return { ok: false, error: "Network error — please retry." };
   }
@@ -127,7 +148,7 @@ function QueueTab() {
   const { data: tickets } = useSWR<TicketRow[]>("/api/tickets", fetcher, POLL);
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         {!tickets && <SkeletonRows />}
         {tickets?.map((t) => (
           <div key={t.id} className="rounded-lg border bg-white px-4 py-3">
@@ -299,21 +320,32 @@ function ApprovalsTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [celebrating, setCelebrating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [announce, setAnnounce] = useState("");
 
   const decide = async (id: string, decision: "approved" | "denied") => {
     setBusy(id);
     setError(null);
     try {
-      const res = await postJson(`/api/approvals/${id}`, { decision });
+      const res = await postJson<{ executed?: boolean; result?: { error?: string } }>(
+        `/api/approvals/${id}`,
+        { decision },
+      );
       if (!res.ok) {
         setError(res.error);
         return;
       }
-      if (decision === "approved" && !prefersReducedMotion()) {
-        // Hold the card while its rail turns green; `busy` stays set the whole
-        // time, so the buttons can't double-fire during the hold.
-        setCelebrating(id);
-        await new Promise((r) => setTimeout(r, CEREMONY_MS));
+      // A 200 with executed:false means the approval was recorded but its
+      // connector action failed (e.g. a simulated outage). Surface that instead
+      // of playing the green "GO" ceremony on an action that didn't take.
+      if (decision === "approved" && res.data.executed === false) {
+        setError(
+          res.data.result?.error
+            ? `Approved, but the action failed: ${res.data.result.error}`
+            : "Approved, but the action didn't execute — check the ticket and retry.",
+        );
+      } else if (decision === "approved") {
+        setAnnounce("Approval granted and the action executed.");
+        await playCeremony(id, setCelebrating);
       }
       // Trust + graduations refresh immediately: the approval that crosses a
       // threshold must pop its proposal card now, not on the next poll.
@@ -334,14 +366,25 @@ function ApprovalsTab() {
     setBusy(id);
     setError(null);
     try {
-      const res = await postJson(`/api/graduations/${id}`, { decision });
+      const res = await postJson<{ status?: string; reason?: string }>(
+        `/api/graduations/${id}`,
+        { decision },
+      );
       if (!res.ok) {
         setError(res.error);
         return;
       }
-      if (decision === "accepted" && !prefersReducedMotion()) {
-        setCelebrating(id);
-        await new Promise((r) => setTimeout(r, CEREMONY_MS));
+      // An accepted proposal can come back "stale" (200, but no rule created)
+      // when the policy table moved since it was proposed. Don't celebrate a
+      // graduation that didn't happen.
+      if (decision === "accepted" && res.data.status === "stale") {
+        setError(
+          res.data.reason ??
+            "This proposal went stale before you accepted it — no policy change was made.",
+        );
+      } else if (decision === "accepted") {
+        setAnnounce("Proposal accepted — autonomy granted for this shape.");
+        await playCeremony(id, setCelebrating);
       }
       await Promise.all([
         mutate("/api/graduations"),
@@ -357,22 +400,18 @@ function ApprovalsTab() {
 
   // The celebrating card stays in the pending list (and out of Decided) even if
   // the 2.5s poll revalidates mid-hold — otherwise the ceremony gets cut short.
-  const pending =
-    approvals?.filter((a) => a.status === "pending" || a.id === celebrating) ?? [];
-  const decided =
-    approvals?.filter((a) => a.status !== "pending" && a.id !== celebrating) ?? [];
+  const { pending, decided } = partitionByCeremony(approvals, celebrating);
   // Earned proposals only — discovered (pattern-mined) ones live in Suggestions.
   const earned = graduations?.filter((g) => g.source === "streak") ?? [];
-  const pendingProposals = earned.filter(
-    (g) => g.status === "pending" || g.id === celebrating,
-  );
-  const decidedProposals = earned.filter(
-    (g) => g.status !== "pending" && g.id !== celebrating,
-  );
+  const { pending: pendingProposals, decided: decidedProposals } =
+    partitionByCeremony(earned, celebrating);
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
+        <p className="sr-only" role="status" aria-live="polite">
+          {announce}
+        </p>
         {error && <ErrorBanner message={error} />}
         {(!approvals || !graduations) && <SkeletonRows />}
         {approvals && graduations && pending.length === 0 && pendingProposals.length === 0 && (
@@ -478,6 +517,7 @@ function SuggestionsTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [celebrating, setCelebrating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [announce, setAnnounce] = useState("");
 
   const promote = async (shapeKey: string) => {
     setBusy(shapeKey);
@@ -504,14 +544,24 @@ function SuggestionsTab() {
     setBusy(id);
     setError(null);
     try {
-      const res = await postJson(`/api/graduations/${id}`, { decision });
+      const res = await postJson<{ status?: string; reason?: string }>(
+        `/api/graduations/${id}`,
+        { decision },
+      );
       if (!res.ok) {
         setError(res.error);
         return;
       }
-      if (decision === "accepted" && !prefersReducedMotion()) {
-        setCelebrating(id);
-        await new Promise((r) => setTimeout(r, CEREMONY_MS));
+      // A stale accept is a 200 that created no rule (see ApprovalsTab) — surface
+      // it rather than celebrating a graduation that didn't happen.
+      if (decision === "accepted" && res.data.status === "stale") {
+        setError(
+          res.data.reason ??
+            "This proposal went stale before you accepted it — no policy change was made.",
+        );
+      } else if (decision === "accepted") {
+        setAnnounce("Proposal accepted — autonomy granted for this shape.");
+        await playCeremony(id, setCelebrating);
       }
       await Promise.all([
         mutate("/api/suggestions"),
@@ -528,16 +578,15 @@ function SuggestionsTab() {
 
   const mined = graduations?.filter((g) => g.source === "pattern_miner") ?? [];
   // Celebrating cards hold their spot through a mid-ceremony poll (see ApprovalsTab).
-  const pendingMined = mined.filter(
-    (g) => g.status === "pending" || g.id === celebrating,
-  );
-  const decidedMined = mined.filter(
-    (g) => g.status !== "pending" && g.id !== celebrating,
-  );
+  const { pending: pendingMined, decided: decidedMined } =
+    partitionByCeremony(mined, celebrating);
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
+        <p className="sr-only" role="status" aria-live="polite">
+          {announce}
+        </p>
         <p className="text-xs text-neutral-500">
           Patterns mined from action history: shapes that keep getting approved cleanly
           but still route to a human. Approvals shows autonomy the agent earned;
@@ -637,7 +686,7 @@ function AuditTab() {
   const { data: events } = useSWR<AuditRow[]>("/api/audit", fetcher, POLL);
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto w-full max-w-[54rem] p-4">
+      <div className={`${COL} p-4`}>
         {!events && (
           <div className="flex flex-col gap-2">
             <SkeletonRows rows={6} className="h-6" />
@@ -646,7 +695,7 @@ function AuditTab() {
         {events && events.length > 0 && (
         <table className="w-full text-left font-mono text-xs">
           <thead>
-            <tr className="border-b text-[10px] tracking-wider text-neutral-400 uppercase">
+            <tr className="border-b text-[10px] tracking-wider text-neutral-500 uppercase">
               <th className="py-1.5 pr-3 font-medium">actor</th>
               <th className="py-1.5 pr-3 font-medium">action</th>
               <th className="py-1.5 pr-3 font-medium">target</th>
@@ -747,7 +796,7 @@ function PoliciesTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         <p className="text-xs text-neutral-500">
           First matching rule wins, top to bottom. Toggle a rule and ask the agent again —
           its behavior changes instantly, because policy lives here, not in the model.
@@ -879,7 +928,7 @@ function TrustTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         <p className="text-xs text-neutral-500">
           Trust is earned per action shape, never assumed. Clean approvals build a streak;
           at the bar, the system proposes autonomy with the policy diff as the approval
@@ -993,7 +1042,7 @@ function InsightsTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         <p className="text-xs text-neutral-500">
           Coverage and outcomes, live from the action history — run an action and
           watch the numbers move. Nothing here is a projection except the minutes
@@ -1139,8 +1188,11 @@ function InsightsTab() {
 
 // Signage-style tab labels: Overpass uppercase micro-labels with the go-green
 // underline supplied by the TabsList `line` variant (after:bg-* merges via cn).
+// text-foreground/75 lifts inactive labels above the WCAG-AA floor at this 11px
+// size — the shadcn default /60 falls short once the labels shrink. The active
+// tab keeps full foreground via the component's data-active variant.
 const TAB_CLASS =
-  "font-display text-[11px] font-semibold uppercase tracking-[0.12em] after:bg-go-600";
+  "font-display text-[11px] font-semibold uppercase tracking-[0.12em] text-foreground/75 after:bg-go-600";
 
 export function AdminConsole() {
   // Establish the IT-console admin session (demo seam). Approve/deny and policy toggles
