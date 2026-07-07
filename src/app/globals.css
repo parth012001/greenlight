@@ -121,3 +121,65 @@
     @apply font-sans;
   }
 }
+
+/*
+ * Signal hardware: the header gantry, the three-lamp housing, and the lamps.
+ * The lit lamp breathes on a 2.5s cycle — the same period as the console's
+ * SWR poll, so the signal literally beats with the app's heartbeat.
+ * Deliberately UNLAYERED (Tailwind v4 tree-shakes author `@layer components`
+ * blocks here): these classes only set properties that no utility on the same
+ * elements touches, so cascade order never competes with Tailwind.
+ */
+.gl-gantry {
+  background: var(--foreground);
+  border-bottom: 1px solid oklch(0.32 0.02 160);
+}
+.gl-signal {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 9999px;
+  background: oklch(0.17 0.012 160);
+  box-shadow: inset 0 1px 2px oklch(0 0 0 / 0.5);
+}
+.gl-lamp {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 9999px;
+}
+.gl-lamp-stop {
+  background: var(--color-red-500);
+  opacity: 0.28;
+}
+.gl-lamp-hold {
+  background: var(--color-amber-400);
+  opacity: 0.28;
+}
+.gl-lamp-go {
+  background: var(--color-go-400);
+  box-shadow: 0 0 7px 2px oklch(0.7 0.13 155 / 0.75);
+  animation: gl-breathe 2.5s ease-in-out infinite;
+}
+.gl-lamp-static {
+  animation: none;
+}
+
+@keyframes gl-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 7px 2px oklch(0.7 0.13 155 / 0.75);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 2px 0 oklch(0.7 0.13 155 / 0.35);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gl-lamp-go {
+    animation: none;
+  }
+}

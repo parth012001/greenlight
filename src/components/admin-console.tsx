@@ -1083,6 +1083,11 @@ function InsightsTab() {
 
 // ---- shell -------------------------------------------------------------------
 
+// Signage-style tab labels: Overpass uppercase micro-labels with the go-green
+// underline supplied by the TabsList `line` variant (after:bg-* merges via cn).
+const TAB_CLASS =
+  "font-display text-[11px] font-semibold uppercase tracking-[0.12em] after:bg-go-600";
+
 export function AdminConsole() {
   // Establish the IT-console admin session (demo seam). Approve/deny and policy toggles
   // require a valid admin session server-side; without it they return 403.
@@ -1105,10 +1110,10 @@ export function AdminConsole() {
 
   return (
     <Tabs defaultValue="queue" className="flex min-h-0 flex-1 flex-col gap-0">
-      <div className="flex items-center justify-between border-b bg-white px-4 py-2">
-        <TabsList>
-          <TabsTrigger value="queue">Queue</TabsTrigger>
-          <TabsTrigger value="approvals">
+      <div className="flex items-center justify-between border-b bg-white px-4 pt-2 pb-1.5">
+        <TabsList variant="line" className="gap-3">
+          <TabsTrigger className={TAB_CLASS} value="queue">Queue</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="approvals">
             Approvals
             {pendingCount > 0 && (
               <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-white">
@@ -1116,7 +1121,7 @@ export function AdminConsole() {
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="suggestions">
+          <TabsTrigger className={TAB_CLASS} value="suggestions">
             Suggestions
             {suggestionCount > 0 && (
               <span className="ml-1.5 rounded-full bg-violet-500 px-1.5 text-[10px] font-semibold text-white">
@@ -1124,12 +1129,14 @@ export function AdminConsole() {
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="trust">Trust</TabsTrigger>
-          <TabsTrigger value="insights">Insights</TabsTrigger>
-          <TabsTrigger value="audit">Audit log</TabsTrigger>
-          <TabsTrigger value="policies">Policies</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="trust">Trust</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="insights">Insights</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="audit">Audit log</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="policies">Policies</TabsTrigger>
         </TabsList>
-        <span className="text-xs text-neutral-500">IT console · Taylor Kim</span>
+        <span className="hidden text-xs whitespace-nowrap text-neutral-500 lg:block">
+          IT console · Taylor Kim
+        </span>
       </div>
       <TabsContent value="queue" className="min-h-0 flex-1">
         <QueueTab />
