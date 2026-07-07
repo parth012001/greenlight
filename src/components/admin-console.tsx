@@ -48,6 +48,17 @@ function SkeletonRows({ rows = 4, className = "h-16" }: { rows?: number; classNa
   );
 }
 
+// Empty tab body: a dim, unlit lamp above the directive line — the signal
+// idles until there's something to decide.
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-2.5 p-10 text-center">
+      <span className="gl-lamp-dim" aria-hidden />
+      <p className="text-sm text-neutral-500">{children}</p>
+    </div>
+  );
+}
+
 // Inline failure notice for a mutation that didn't take — so a silently-failed
 // privileged action can't read as success.
 function ErrorBanner({ message }: { message: string }) {
@@ -108,7 +119,7 @@ function QueueTab() {
   const { data: tickets } = useSWR<TicketRow[]>("/api/tickets", fetcher, POLL);
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
         {!tickets && <SkeletonRows />}
         {tickets?.map((t) => (
           <div key={t.id} className="rounded-lg border bg-white px-4 py-3">
@@ -126,9 +137,7 @@ function QueueTab() {
             )}
           </div>
         ))}
-        {tickets?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">Queue is clear.</p>
-        )}
+        {tickets?.length === 0 && <EmptyState>Queue is clear.</EmptyState>}
       </div>
     </ScrollArea>
   );
@@ -199,7 +208,7 @@ function ProposalCard({
   const preview = proposal.impactPreview;
   const tickets = proposal.evidence.ticketNumbers ?? [];
   return (
-    <div className="rounded-lg border border-violet-200 bg-violet-50/50 px-4 py-3">
+    <div className="rounded-lg border border-l-[3px] border-l-violet-500 bg-white px-4 py-3">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
@@ -233,7 +242,7 @@ function ProposalCard({
         </div>
       </div>
       {preview && (
-        <div className="mt-2.5 rounded-md border border-violet-100 bg-white px-3 py-2.5 text-xs">
+        <div className="mt-2.5 rounded-md border border-violet-100 bg-violet-50/40 px-3 py-2.5 text-xs">
           <div className="flex items-center gap-2">
             <span className="w-10 shrink-0 text-neutral-400">now</span>
             <EffectPill effect={preview.diff.before.effect} />
@@ -328,13 +337,11 @@ function ApprovalsTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
         {error && <ErrorBanner message={error} />}
         {(!approvals || !graduations) && <SkeletonRows />}
         {approvals && graduations && pending.length === 0 && pendingProposals.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">
-            Nothing waiting on you. Sensitive requests will land here.
-          </p>
+          <EmptyState>Nothing waiting on you. Sensitive requests will land here.</EmptyState>
         )}
         {pendingProposals.map((g) => (
           <ProposalCard
@@ -347,7 +354,7 @@ function ApprovalsTab() {
         {pending.map((a) => (
           <div
             key={a.id}
-            className="rounded-lg border border-amber-200 bg-amber-50/50 px-4 py-3"
+            className="rounded-lg border border-l-[3px] border-l-amber-500 bg-white px-4 py-3"
           >
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -481,7 +488,7 @@ function SuggestionsTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
         <p className="text-xs text-neutral-500">
           Patterns mined from action history: shapes that keep getting approved cleanly
           but still route to a human. Approvals shows autonomy the agent earned;
@@ -493,9 +500,7 @@ function SuggestionsTab() {
           graduations &&
           candidates.length === 0 &&
           pendingMined.length === 0 && (
-            <p className="p-6 text-center text-sm text-neutral-500">
-              No patterns yet — as approvals recur, candidates surface here.
-            </p>
+            <EmptyState>No patterns yet — as approvals recur, candidates surface here.</EmptyState>
           )}
         {pendingMined.map((g) => (
           <ProposalCard
@@ -506,7 +511,10 @@ function SuggestionsTab() {
           />
         ))}
         {candidates?.map((c) => (
-          <div key={c.shapeKey} className="rounded-lg border bg-white px-4 py-3">
+          <div
+            key={c.shapeKey}
+            className="rounded-lg border border-l-[3px] border-l-violet-500 bg-white px-4 py-3"
+          >
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
@@ -579,7 +587,7 @@ function AuditTab() {
   const { data: events } = useSWR<AuditRow[]>("/api/audit", fetcher, POLL);
   return (
     <ScrollArea className="h-full">
-      <div className="p-4">
+      <div className="mx-auto w-full max-w-[54rem] p-4">
         {!events && (
           <div className="flex flex-col gap-2">
             <SkeletonRows rows={6} className="h-6" />
@@ -622,9 +630,7 @@ function AuditTab() {
           </tbody>
         </table>
         )}
-        {events?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">No activity yet.</p>
-        )}
+        {events?.length === 0 && <EmptyState>No activity yet.</EmptyState>}
       </div>
     </ScrollArea>
   );
@@ -691,7 +697,7 @@ function PoliciesTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
         <p className="text-xs text-neutral-500">
           First matching rule wins, top to bottom. Toggle a rule and ask the agent again —
           its behavior changes instantly, because policy lives here, not in the model.
@@ -823,7 +829,7 @@ function TrustTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
         <p className="text-xs text-neutral-500">
           Trust is earned per action shape, never assumed. Clean approvals build a streak;
           at the bar, the system proposes autonomy with the policy diff as the approval
@@ -832,9 +838,7 @@ function TrustTab() {
         {error && <ErrorBanner message={error} />}
         {!shapes && <SkeletonRows />}
         {shapes?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">
-            No trust history yet — approvals build per-shape track records here.
-          </p>
+          <EmptyState>No trust history yet — approvals build per-shape track records here.</EmptyState>
         )}
         {shapes?.map((s) => (
           <div key={s.shapeKey} className="rounded-lg border bg-white px-4 py-3">
@@ -939,7 +943,7 @@ function InsightsTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className="mx-auto flex w-full max-w-[54rem] flex-col gap-2 p-4">
         <p className="text-xs text-neutral-500">
           Coverage and outcomes, live from the action history — run an action and
           watch the numbers move. Nothing here is a projection except the minutes
