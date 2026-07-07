@@ -12,6 +12,14 @@ import type { Metrics } from "@/lib/metrics";
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 const POLL = { refreshInterval: 2500 };
 
+// The one motion moment: on approve/accept, the card's signal rail turns green
+// and holds briefly before the card moves to Decided. Skipped entirely under
+// prefers-reduced-motion; deny/decline stay instant (no ceremony on a red action).
+const CEREMONY_MS = 800;
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 // Fire a mutation and report failure instead of swallowing it. Privileged actions
 // (approve, graduate, revoke, outage) must never silently no-op on a 403/500/network
 // error — the caller surfaces `error` in the UI so the admin knows it didn't take.
@@ -199,16 +207,22 @@ function EffectPill({ effect }: { effect: string }) {
 function ProposalCard({
   proposal,
   busy,
+  celebrating = false,
   onDecide,
 }: {
   proposal: GraduationRow;
   busy: boolean;
+  celebrating?: boolean;
   onDecide: (id: string, decision: "accepted" | "declined") => void;
 }) {
   const preview = proposal.impactPreview;
   const tickets = proposal.evidence.ticketNumbers ?? [];
   return (
-    <div className="rounded-lg border border-l-[3px] border-l-violet-500 bg-white px-4 py-3">
+    <div
+      className={`rounded-lg border border-l-[3px] bg-white px-4 py-3 transition-colors duration-500 ${
+        celebrating ? "border-l-go-600" : "border-l-violet-500"
+      }`}
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
@@ -283,6 +297,7 @@ function ApprovalsTab() {
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
   const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [celebrating, setCelebrating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const decide = async (id: string, decision: "approved" | "denied") => {
@@ -293,6 +308,12 @@ function ApprovalsTab() {
       if (!res.ok) {
         setError(res.error);
         return;
+      }
+      if (decision === "approved" && !prefersReducedMotion()) {
+        // Hold the card while its rail turns green; `busy` stays set the whole
+        // time, so the buttons can't double-fire during the hold.
+        setCelebrating(id);
+        await new Promise((r) => setTimeout(r, CEREMONY_MS));
       }
       // Trust + graduations refresh immediately: the approval that crosses a
       // threshold must pop its proposal card now, not on the next poll.
@@ -305,6 +326,7 @@ function ApprovalsTab() {
       ]);
     } finally {
       setBusy(null);
+      setCelebrating(null);
     }
   };
 
@@ -317,6 +339,10 @@ function ApprovalsTab() {
         setError(res.error);
         return;
       }
+      if (decision === "accepted" && !prefersReducedMotion()) {
+        setCelebrating(id);
+        await new Promise((r) => setTimeout(r, CEREMONY_MS));
+      }
       await Promise.all([
         mutate("/api/graduations"),
         mutate("/api/policies"),
@@ -325,15 +351,24 @@ function ApprovalsTab() {
       ]);
     } finally {
       setBusy(null);
+      setCelebrating(null);
     }
   };
 
-  const pending = approvals?.filter((a) => a.status === "pending") ?? [];
-  const decided = approvals?.filter((a) => a.status !== "pending") ?? [];
+  // The celebrating card stays in the pending list (and out of Decided) even if
+  // the 2.5s poll revalidates mid-hold — otherwise the ceremony gets cut short.
+  const pending =
+    approvals?.filter((a) => a.status === "pending" || a.id === celebrating) ?? [];
+  const decided =
+    approvals?.filter((a) => a.status !== "pending" && a.id !== celebrating) ?? [];
   // Earned proposals only — discovered (pattern-mined) ones live in Suggestions.
   const earned = graduations?.filter((g) => g.source === "streak") ?? [];
-  const pendingProposals = earned.filter((g) => g.status === "pending");
-  const decidedProposals = earned.filter((g) => g.status !== "pending");
+  const pendingProposals = earned.filter(
+    (g) => g.status === "pending" || g.id === celebrating,
+  );
+  const decidedProposals = earned.filter(
+    (g) => g.status !== "pending" && g.id !== celebrating,
+  );
 
   return (
     <ScrollArea className="h-full">
@@ -348,13 +383,16 @@ function ApprovalsTab() {
             key={g.id}
             proposal={g}
             busy={busy === g.id}
+            celebrating={celebrating === g.id}
             onDecide={decideProposal}
           />
         ))}
         {pending.map((a) => (
           <div
             key={a.id}
-            className="rounded-lg border border-l-[3px] border-l-amber-500 bg-white px-4 py-3"
+            className={`rounded-lg border border-l-[3px] bg-white px-4 py-3 transition-colors duration-500 ${
+              celebrating === a.id ? "border-l-go-600" : "border-l-amber-500"
+            }`}
           >
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -438,6 +476,7 @@ function SuggestionsTab() {
   const { data: candidates } = useSWR<SuggestionRow[]>("/api/suggestions", fetcher, POLL);
   const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [celebrating, setCelebrating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const promote = async (shapeKey: string) => {
@@ -470,6 +509,10 @@ function SuggestionsTab() {
         setError(res.error);
         return;
       }
+      if (decision === "accepted" && !prefersReducedMotion()) {
+        setCelebrating(id);
+        await new Promise((r) => setTimeout(r, CEREMONY_MS));
+      }
       await Promise.all([
         mutate("/api/suggestions"),
         mutate("/api/graduations"),
@@ -479,12 +522,18 @@ function SuggestionsTab() {
       ]);
     } finally {
       setBusy(null);
+      setCelebrating(null);
     }
   };
 
   const mined = graduations?.filter((g) => g.source === "pattern_miner") ?? [];
-  const pendingMined = mined.filter((g) => g.status === "pending");
-  const decidedMined = mined.filter((g) => g.status !== "pending");
+  // Celebrating cards hold their spot through a mid-ceremony poll (see ApprovalsTab).
+  const pendingMined = mined.filter(
+    (g) => g.status === "pending" || g.id === celebrating,
+  );
+  const decidedMined = mined.filter(
+    (g) => g.status !== "pending" && g.id !== celebrating,
+  );
 
   return (
     <ScrollArea className="h-full">
@@ -507,6 +556,7 @@ function SuggestionsTab() {
             key={g.id}
             proposal={g}
             busy={busy === g.id}
+            celebrating={celebrating === g.id}
             onDecide={decideProposal}
           />
         ))}
@@ -594,14 +644,14 @@ function AuditTab() {
           </div>
         )}
         {events && events.length > 0 && (
-        <table className="w-full text-left text-xs">
+        <table className="w-full text-left font-mono text-xs">
           <thead>
-            <tr className="border-b text-neutral-500">
+            <tr className="border-b text-[10px] tracking-wider text-neutral-400 uppercase">
               <th className="py-1.5 pr-3 font-medium">actor</th>
               <th className="py-1.5 pr-3 font-medium">action</th>
               <th className="py-1.5 pr-3 font-medium">target</th>
               <th className="py-1.5 pr-3 font-medium">detail</th>
-              <th className="py-1.5 font-medium">hash</th>
+              <th className="py-1.5 pl-4 font-medium">hash</th>
             </tr>
           </thead>
           <tbody>
@@ -611,7 +661,7 @@ function AuditTab() {
                   <span className="font-medium">{e.actorType}</span>
                   <span className="text-neutral-500">/{e.actorId}</span>
                 </td>
-                <td className="py-1.5 pr-3 font-mono whitespace-nowrap">{e.action}</td>
+                <td className="py-1.5 pr-3 whitespace-nowrap">{e.action}</td>
                 <td className="py-1.5 pr-3 whitespace-nowrap">{e.target}</td>
                 <td className="max-w-[16rem] truncate py-1.5 pr-3 text-neutral-500">
                   {(e.detail.summary as string) ??
@@ -620,7 +670,7 @@ function AuditTab() {
                     ""}
                 </td>
                 <td
-                  className="py-1.5 font-mono text-neutral-500"
+                  className="gl-hash py-1.5 pl-4 text-neutral-500"
                   title={`hash: ${e.hash}\nEach hash covers the previous one — the chain breaks if history is edited.`}
                 >
                   {e.hash.slice(0, 8)}

@@ -176,6 +176,41 @@
     0 0 0 3px var(--color-neutral-100);
 }
 
+/*
+ * Audit ledger chain rail: a continuous vertical line with a node per row,
+ * running down the hash column — the visible form of "each hash covers the
+ * previous one". Drawn per-cell so row-height changes never desync it.
+ */
+.gl-hash {
+  position: relative;
+}
+.gl-hash::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--color-neutral-200);
+}
+.gl-hash::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 50%;
+  margin-top: -2.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--color-neutral-300);
+}
+tbody tr:first-child .gl-hash::before {
+  top: 50%;
+}
+tbody tr:last-child .gl-hash::before {
+  bottom: 50%;
+}
+
 @keyframes gl-breathe {
   0%,
   100% {
