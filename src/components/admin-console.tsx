@@ -62,13 +62,13 @@ function ErrorBanner({ message }: { message: string }) {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  solved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  solved: "bg-go-50 text-go-700 border-go-200",
   pending_approval: "bg-amber-50 text-amber-700 border-amber-200",
   denied: "bg-red-50 text-red-700 border-red-200",
-  in_progress: "bg-blue-50 text-blue-700 border-blue-200",
+  in_progress: "bg-neutral-100 text-neutral-600 border-neutral-200",
   new: "bg-neutral-100 text-neutral-600 border-neutral-200",
   pending: "bg-amber-50 text-amber-700 border-amber-200",
-  approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  approved: "bg-go-50 text-go-700 border-go-200",
   // graduation proposals
   accepted: "bg-violet-50 text-violet-700 border-violet-200",
   declined: "bg-red-50 text-red-700 border-red-200",
@@ -76,7 +76,7 @@ const STATUS_STYLES: Record<string, string> = {
   // trust ledger
   supervised: "bg-neutral-100 text-neutral-600 border-neutral-200",
   proposed: "bg-violet-50 text-violet-700 border-violet-200",
-  autonomous: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  autonomous: "bg-go-50 text-go-700 border-go-200",
   demoted: "bg-red-50 text-red-700 border-red-200",
 };
 
@@ -362,7 +362,6 @@ function ApprovalsTab() {
                   size="sm"
                   disabled={busy === a.id}
                   onClick={() => decide(a.id, "approved")}
-                  className="bg-emerald-600 hover:bg-emerald-700"
                 >
                   Approve
                 </Button>
@@ -642,7 +641,7 @@ interface PolicyRow {
 }
 
 const EFFECT_STYLES: Record<string, string> = {
-  auto_approve: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  auto_approve: "bg-go-50 text-go-700 border-go-200",
   require_approval: "bg-amber-50 text-amber-700 border-amber-200",
   deny: "bg-red-50 text-red-700 border-red-200",
 };
@@ -847,7 +846,7 @@ function TrustTab() {
                 </div>
                 <div className="mt-2 flex items-center gap-2.5">
                   {s.status === "autonomous" ? (
-                    <span className="text-xs font-medium text-emerald-700">
+                    <span className="text-xs font-medium text-go-700">
                       {s.autonomousRuns} autonomous {s.autonomousRuns === 1 ? "run" : "runs"} since graduation
                     </span>
                   ) : (
@@ -996,7 +995,7 @@ function InsightsTab() {
                         aria-label={`${k.kind}: ${k.autoResolved} of ${k.terminal} auto-resolved`}
                       >
                         <div
-                          className="h-full rounded-full bg-emerald-600 transition-all"
+                          className="h-full rounded-full bg-go-600 transition-all"
                           style={{ width: `${(k.rate ?? 0) * 100}%` }}
                         />
                       </div>
@@ -1018,7 +1017,7 @@ function InsightsTab() {
                   </div>
                   <div className="flex items-center gap-3 text-[10px] text-neutral-500">
                     <span className="flex items-center gap-1">
-                      <span className="h-2 w-2 rounded-[2px] bg-emerald-600" /> auto
+                      <span className="h-2 w-2 rounded-[2px] bg-go-600" /> auto
                     </span>
                     <span className="flex items-center gap-1">
                       <span className="h-2 w-2 rounded-[2px] bg-amber-600" /> human-approved
@@ -1059,7 +1058,7 @@ function InsightsTab() {
                               )}
                               {d.auto > 0 && (
                                 <div
-                                  className="w-full bg-emerald-600"
+                                  className="w-full bg-go-600"
                                   style={{ height: `${(d.auto / maxDay) * BAR_MAX_PX}px` }}
                                 />
                               )}

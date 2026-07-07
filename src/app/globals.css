@@ -7,9 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-public-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-overpass-mono), ui-monospace, SFMono-Regular, monospace;
+  --font-display: var(--font-overpass), var(--font-public-sans), ui-sans-serif, sans-serif;
+  --font-heading: var(--font-overpass), var(--font-public-sans), ui-sans-serif, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,25 +49,43 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * "Signal & Ledger" palette. The go-* scale is the product's one owned green
+ * (go-600 = #00713F, deep US guide-sign green) — it replaces both the old teal
+ * brand accent and emerald status color. Declared in a literal @theme block so
+ * Tailwind generates the bg-go, text-go and border-go utility families.
+ */
+@theme {
+  --color-go-50: oklch(0.975 0.015 155);
+  --color-go-100: oklch(0.945 0.035 155);
+  --color-go-200: oklch(0.885 0.07 155);
+  --color-go-300: oklch(0.8 0.1 155);
+  --color-go-400: oklch(0.7 0.13 155); /* lit-lamp green */
+  --color-go-500: oklch(0.58 0.125 155);
+  --color-go-600: oklch(0.4819 0.1189 155.1); /* #00713F */
+  --color-go-700: oklch(0.42 0.1 155);
+  --color-go-800: oklch(0.35 0.085 155);
+}
+
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --background: oklch(0.9775 0.0041 121.6); /* Paper #F7F8F5 */
+  --foreground: oklch(0.2285 0.0162 160.5); /* Ink #161F1A */
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.2285 0.0162 160.5);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.2285 0.0162 160.5);
+  --primary: var(--color-go-600);
+  --primary-foreground: oklch(0.985 0.005 155);
+  --secondary: oklch(0.955 0.008 155);
+  --secondary-foreground: oklch(0.2285 0.0162 160.5);
+  --muted: oklch(0.955 0.008 155);
+  --muted-foreground: oklch(0.5 0.02 160);
+  --accent: oklch(0.955 0.008 155);
+  --accent-foreground: oklch(0.2285 0.0162 160.5);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --border: oklch(0.915 0.01 155);
+  --input: oklch(0.915 0.01 155);
+  --ring: var(--color-go-600);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
@@ -84,10 +103,11 @@
 }
 
 /*
- * Greenlight is intentionally LIGHT-ONLY. `dark:` utilities are class-gated to a
- * `.dark` ancestor (see @custom-variant dark above) which is never applied, so dark
- * mode cannot activate and the hardcoded light surfaces stay consistent. The dead
- * `.dark` token theme was removed; a real, wired dark mode is tracked in issue #5.
+ * Greenlight is intentionally LIGHT-ONLY (Paper ground / Ink text, white cards).
+ * `dark:` utilities are class-gated to a `.dark` ancestor (see @custom-variant dark
+ * above) which is never applied, so dark mode cannot activate and the light surfaces
+ * stay consistent. The dead `.dark` token theme was removed; a real, wired dark mode
+ * is tracked in issue #5.
  */
 
 @layer base {

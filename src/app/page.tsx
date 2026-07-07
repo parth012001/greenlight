@@ -3,17 +3,17 @@ import { AdminConsole } from "@/components/admin-console";
 
 export default function Home() {
   return (
-    <div className="flex h-screen flex-col bg-neutral-50">
+    <div className="flex h-screen flex-col bg-background">
       <header className="flex items-center justify-between border-b bg-white px-5 py-3">
         <div className="flex items-baseline gap-3">
           <h1 className="text-lg font-semibold tracking-tight">
-            <span className="text-teal-600">●</span> Greenlight
+            <span className="text-go-600">●</span> Greenlight
           </h1>
           <p className="hidden text-sm text-neutral-500 md:block">
             An IT agent that acts instantly when policy allows — and asks a human when it doesn&apos;t.
           </p>
         </div>
-        <span className="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-700">
+        <span className="rounded-full border border-go-200 bg-go-50 px-3 py-1 text-xs font-medium text-go-700">
           Sandbox connectors · every action logged
         </span>
       </header>
