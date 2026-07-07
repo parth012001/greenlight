@@ -7,19 +7,47 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { CEREMONY_MS, partitionByCeremony } from "@/components/ceremony";
 import type { Metrics } from "@/lib/metrics";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+// 2500ms poll. Keep in sync with the gl-breathe 2.5s lamp cycle in globals.css —
+// the header signal is meant to beat with the console's heartbeat.
 const POLL = { refreshInterval: 2500 };
+
+// Shared max-width for every tab's content column — one source of truth so the
+// seven tab bodies can't drift apart.
+const COL = "mx-auto w-full max-w-[54rem]";
+
+// The one motion moment: on approve/accept, the card's signal rail turns green
+// and holds briefly before the card moves to Decided. Skipped entirely under
+// prefers-reduced-motion; deny/decline stay instant (no ceremony on a red action).
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// Hold the celebrating card while its rail turns green, then release. No-op under
+// prefers-reduced-motion. The caller keeps `busy` set across the hold so the
+// buttons can't double-fire during it.
+async function playCeremony(
+  id: string,
+  setCelebrating: (v: string | null) => void,
+) {
+  if (prefersReducedMotion()) return;
+  setCelebrating(id);
+  await new Promise((r) => setTimeout(r, CEREMONY_MS));
+}
 
 // Fire a mutation and report failure instead of swallowing it. Privileged actions
 // (approve, graduate, revoke, outage) must never silently no-op on a 403/500/network
 // error — the caller surfaces `error` in the UI so the admin knows it didn't take.
-async function postJson(
+// Returns the parsed 2xx body so the caller can also catch no-op successes (a
+// connector that failed, a proposal that went stale) that come back as 200s.
+async function postJson<T = unknown>(
   url: string,
   body: unknown,
   method: "POST" | "PATCH" = "POST",
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
   try {
     const res = await fetch(url, {
       method,
@@ -30,7 +58,8 @@ async function postJson(
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       return { ok: false, error: data.error ?? `Request failed (${res.status})` };
     }
-    return { ok: true };
+    const data = (await res.json().catch(() => ({}))) as T;
+    return { ok: true, data };
   } catch {
     return { ok: false, error: "Network error — please retry." };
   }
@@ -48,6 +77,17 @@ function SkeletonRows({ rows = 4, className = "h-16" }: { rows?: number; classNa
   );
 }
 
+// Empty tab body: a dim, unlit lamp above the directive line — the signal
+// idles until there's something to decide.
+function EmptyState({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col items-center gap-2.5 p-10 text-center">
+      <span className="gl-lamp-dim" aria-hidden />
+      <p className="text-sm text-neutral-500">{children}</p>
+    </div>
+  );
+}
+
 // Inline failure notice for a mutation that didn't take — so a silently-failed
 // privileged action can't read as success.
 function ErrorBanner({ message }: { message: string }) {
@@ -62,13 +102,13 @@ function ErrorBanner({ message }: { message: string }) {
 }
 
 const STATUS_STYLES: Record<string, string> = {
-  solved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  solved: "bg-go-50 text-go-700 border-go-200",
   pending_approval: "bg-amber-50 text-amber-700 border-amber-200",
   denied: "bg-red-50 text-red-700 border-red-200",
-  in_progress: "bg-blue-50 text-blue-700 border-blue-200",
+  in_progress: "bg-neutral-100 text-neutral-600 border-neutral-200",
   new: "bg-neutral-100 text-neutral-600 border-neutral-200",
   pending: "bg-amber-50 text-amber-700 border-amber-200",
-  approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  approved: "bg-go-50 text-go-700 border-go-200",
   // graduation proposals
   accepted: "bg-violet-50 text-violet-700 border-violet-200",
   declined: "bg-red-50 text-red-700 border-red-200",
@@ -76,7 +116,7 @@ const STATUS_STYLES: Record<string, string> = {
   // trust ledger
   supervised: "bg-neutral-100 text-neutral-600 border-neutral-200",
   proposed: "bg-violet-50 text-violet-700 border-violet-200",
-  autonomous: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  autonomous: "bg-go-50 text-go-700 border-go-200",
   demoted: "bg-red-50 text-red-700 border-red-200",
 };
 
@@ -108,7 +148,7 @@ function QueueTab() {
   const { data: tickets } = useSWR<TicketRow[]>("/api/tickets", fetcher, POLL);
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         {!tickets && <SkeletonRows />}
         {tickets?.map((t) => (
           <div key={t.id} className="rounded-lg border bg-white px-4 py-3">
@@ -126,9 +166,7 @@ function QueueTab() {
             )}
           </div>
         ))}
-        {tickets?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">Queue is clear.</p>
-        )}
+        {tickets?.length === 0 && <EmptyState>Queue is clear.</EmptyState>}
       </div>
     </ScrollArea>
   );
@@ -190,16 +228,22 @@ function EffectPill({ effect }: { effect: string }) {
 function ProposalCard({
   proposal,
   busy,
+  celebrating = false,
   onDecide,
 }: {
   proposal: GraduationRow;
   busy: boolean;
+  celebrating?: boolean;
   onDecide: (id: string, decision: "accepted" | "declined") => void;
 }) {
   const preview = proposal.impactPreview;
   const tickets = proposal.evidence.ticketNumbers ?? [];
   return (
-    <div className="rounded-lg border border-violet-200 bg-violet-50/50 px-4 py-3">
+    <div
+      className={`rounded-lg border border-l-[3px] bg-white px-4 py-3 transition-colors duration-500 ${
+        celebrating ? "border-l-go-600" : "border-l-violet-500"
+      }`}
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
@@ -233,7 +277,7 @@ function ProposalCard({
         </div>
       </div>
       {preview && (
-        <div className="mt-2.5 rounded-md border border-violet-100 bg-white px-3 py-2.5 text-xs">
+        <div className="mt-2.5 rounded-md border border-violet-100 bg-violet-50/40 px-3 py-2.5 text-xs">
           <div className="flex items-center gap-2">
             <span className="w-10 shrink-0 text-neutral-400">now</span>
             <EffectPill effect={preview.diff.before.effect} />
@@ -274,16 +318,34 @@ function ApprovalsTab() {
   const { data: approvals } = useSWR<ApprovalRow[]>("/api/approvals", fetcher, POLL);
   const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [celebrating, setCelebrating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [announce, setAnnounce] = useState("");
 
   const decide = async (id: string, decision: "approved" | "denied") => {
     setBusy(id);
     setError(null);
     try {
-      const res = await postJson(`/api/approvals/${id}`, { decision });
+      const res = await postJson<{ executed?: boolean; result?: { error?: string } }>(
+        `/api/approvals/${id}`,
+        { decision },
+      );
       if (!res.ok) {
         setError(res.error);
         return;
+      }
+      // A 200 with executed:false means the approval was recorded but its
+      // connector action failed (e.g. a simulated outage). Surface that instead
+      // of playing the green "GO" ceremony on an action that didn't take.
+      if (decision === "approved" && res.data.executed === false) {
+        setError(
+          res.data.result?.error
+            ? `Approved, but the action failed: ${res.data.result.error}`
+            : "Approved, but the action didn't execute — check the ticket and retry.",
+        );
+      } else if (decision === "approved") {
+        setAnnounce("Approval granted and the action executed.");
+        await playCeremony(id, setCelebrating);
       }
       // Trust + graduations refresh immediately: the approval that crosses a
       // threshold must pop its proposal card now, not on the next poll.
@@ -296,6 +358,7 @@ function ApprovalsTab() {
       ]);
     } finally {
       setBusy(null);
+      setCelebrating(null);
     }
   };
 
@@ -303,10 +366,25 @@ function ApprovalsTab() {
     setBusy(id);
     setError(null);
     try {
-      const res = await postJson(`/api/graduations/${id}`, { decision });
+      const res = await postJson<{ status?: string; reason?: string }>(
+        `/api/graduations/${id}`,
+        { decision },
+      );
       if (!res.ok) {
         setError(res.error);
         return;
+      }
+      // An accepted proposal can come back "stale" (200, but no rule created)
+      // when the policy table moved since it was proposed. Don't celebrate a
+      // graduation that didn't happen.
+      if (decision === "accepted" && res.data.status === "stale") {
+        setError(
+          res.data.reason ??
+            "This proposal went stale before you accepted it — no policy change was made.",
+        );
+      } else if (decision === "accepted") {
+        setAnnounce("Proposal accepted — autonomy granted for this shape.");
+        await playCeremony(id, setCelebrating);
       }
       await Promise.all([
         mutate("/api/graduations"),
@@ -316,38 +394,44 @@ function ApprovalsTab() {
       ]);
     } finally {
       setBusy(null);
+      setCelebrating(null);
     }
   };
 
-  const pending = approvals?.filter((a) => a.status === "pending") ?? [];
-  const decided = approvals?.filter((a) => a.status !== "pending") ?? [];
+  // The celebrating card stays in the pending list (and out of Decided) even if
+  // the 2.5s poll revalidates mid-hold — otherwise the ceremony gets cut short.
+  const { pending, decided } = partitionByCeremony(approvals, celebrating);
   // Earned proposals only — discovered (pattern-mined) ones live in Suggestions.
   const earned = graduations?.filter((g) => g.source === "streak") ?? [];
-  const pendingProposals = earned.filter((g) => g.status === "pending");
-  const decidedProposals = earned.filter((g) => g.status !== "pending");
+  const { pending: pendingProposals, decided: decidedProposals } =
+    partitionByCeremony(earned, celebrating);
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
+        <p className="sr-only" role="status" aria-live="polite">
+          {announce}
+        </p>
         {error && <ErrorBanner message={error} />}
         {(!approvals || !graduations) && <SkeletonRows />}
         {approvals && graduations && pending.length === 0 && pendingProposals.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">
-            Nothing waiting on you. Sensitive requests will land here.
-          </p>
+          <EmptyState>Nothing waiting on you. Sensitive requests will land here.</EmptyState>
         )}
         {pendingProposals.map((g) => (
           <ProposalCard
             key={g.id}
             proposal={g}
             busy={busy === g.id}
+            celebrating={celebrating === g.id}
             onDecide={decideProposal}
           />
         ))}
         {pending.map((a) => (
           <div
             key={a.id}
-            className="rounded-lg border border-amber-200 bg-amber-50/50 px-4 py-3"
+            className={`rounded-lg border border-l-[3px] bg-white px-4 py-3 transition-colors duration-500 ${
+              celebrating === a.id ? "border-l-go-600" : "border-l-amber-500"
+            }`}
           >
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -362,7 +446,6 @@ function ApprovalsTab() {
                   size="sm"
                   disabled={busy === a.id}
                   onClick={() => decide(a.id, "approved")}
-                  className="bg-emerald-600 hover:bg-emerald-700"
                 >
                   Approve
                 </Button>
@@ -432,7 +515,9 @@ function SuggestionsTab() {
   const { data: candidates } = useSWR<SuggestionRow[]>("/api/suggestions", fetcher, POLL);
   const { data: graduations } = useSWR<GraduationRow[]>("/api/graduations", fetcher, POLL);
   const [busy, setBusy] = useState<string | null>(null);
+  const [celebrating, setCelebrating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [announce, setAnnounce] = useState("");
 
   const promote = async (shapeKey: string) => {
     setBusy(shapeKey);
@@ -459,10 +544,24 @@ function SuggestionsTab() {
     setBusy(id);
     setError(null);
     try {
-      const res = await postJson(`/api/graduations/${id}`, { decision });
+      const res = await postJson<{ status?: string; reason?: string }>(
+        `/api/graduations/${id}`,
+        { decision },
+      );
       if (!res.ok) {
         setError(res.error);
         return;
+      }
+      // A stale accept is a 200 that created no rule (see ApprovalsTab) — surface
+      // it rather than celebrating a graduation that didn't happen.
+      if (decision === "accepted" && res.data.status === "stale") {
+        setError(
+          res.data.reason ??
+            "This proposal went stale before you accepted it — no policy change was made.",
+        );
+      } else if (decision === "accepted") {
+        setAnnounce("Proposal accepted — autonomy granted for this shape.");
+        await playCeremony(id, setCelebrating);
       }
       await Promise.all([
         mutate("/api/suggestions"),
@@ -473,16 +572,21 @@ function SuggestionsTab() {
       ]);
     } finally {
       setBusy(null);
+      setCelebrating(null);
     }
   };
 
   const mined = graduations?.filter((g) => g.source === "pattern_miner") ?? [];
-  const pendingMined = mined.filter((g) => g.status === "pending");
-  const decidedMined = mined.filter((g) => g.status !== "pending");
+  // Celebrating cards hold their spot through a mid-ceremony poll (see ApprovalsTab).
+  const { pending: pendingMined, decided: decidedMined } =
+    partitionByCeremony(mined, celebrating);
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
+        <p className="sr-only" role="status" aria-live="polite">
+          {announce}
+        </p>
         <p className="text-xs text-neutral-500">
           Patterns mined from action history: shapes that keep getting approved cleanly
           but still route to a human. Approvals shows autonomy the agent earned;
@@ -494,20 +598,22 @@ function SuggestionsTab() {
           graduations &&
           candidates.length === 0 &&
           pendingMined.length === 0 && (
-            <p className="p-6 text-center text-sm text-neutral-500">
-              No patterns yet — as approvals recur, candidates surface here.
-            </p>
+            <EmptyState>No patterns yet — as approvals recur, candidates surface here.</EmptyState>
           )}
         {pendingMined.map((g) => (
           <ProposalCard
             key={g.id}
             proposal={g}
             busy={busy === g.id}
+            celebrating={celebrating === g.id}
             onDecide={decideProposal}
           />
         ))}
         {candidates?.map((c) => (
-          <div key={c.shapeKey} className="rounded-lg border bg-white px-4 py-3">
+          <div
+            key={c.shapeKey}
+            className="rounded-lg border border-l-[3px] border-l-violet-500 bg-white px-4 py-3"
+          >
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-violet-600">
@@ -580,21 +686,21 @@ function AuditTab() {
   const { data: events } = useSWR<AuditRow[]>("/api/audit", fetcher, POLL);
   return (
     <ScrollArea className="h-full">
-      <div className="p-4">
+      <div className={`${COL} p-4`}>
         {!events && (
           <div className="flex flex-col gap-2">
             <SkeletonRows rows={6} className="h-6" />
           </div>
         )}
         {events && events.length > 0 && (
-        <table className="w-full text-left text-xs">
+        <table className="w-full text-left font-mono text-xs">
           <thead>
-            <tr className="border-b text-neutral-500">
+            <tr className="border-b text-[10px] tracking-wider text-neutral-500 uppercase">
               <th className="py-1.5 pr-3 font-medium">actor</th>
               <th className="py-1.5 pr-3 font-medium">action</th>
               <th className="py-1.5 pr-3 font-medium">target</th>
               <th className="py-1.5 pr-3 font-medium">detail</th>
-              <th className="py-1.5 font-medium">hash</th>
+              <th className="py-1.5 pl-4 font-medium">hash</th>
             </tr>
           </thead>
           <tbody>
@@ -604,7 +710,7 @@ function AuditTab() {
                   <span className="font-medium">{e.actorType}</span>
                   <span className="text-neutral-500">/{e.actorId}</span>
                 </td>
-                <td className="py-1.5 pr-3 font-mono whitespace-nowrap">{e.action}</td>
+                <td className="py-1.5 pr-3 whitespace-nowrap">{e.action}</td>
                 <td className="py-1.5 pr-3 whitespace-nowrap">{e.target}</td>
                 <td className="max-w-[16rem] truncate py-1.5 pr-3 text-neutral-500">
                   {(e.detail.summary as string) ??
@@ -613,7 +719,7 @@ function AuditTab() {
                     ""}
                 </td>
                 <td
-                  className="py-1.5 font-mono text-neutral-500"
+                  className="gl-hash py-1.5 pl-4 text-neutral-500"
                   title={`hash: ${e.hash}\nEach hash covers the previous one — the chain breaks if history is edited.`}
                 >
                   {e.hash.slice(0, 8)}
@@ -623,9 +729,7 @@ function AuditTab() {
           </tbody>
         </table>
         )}
-        {events?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">No activity yet.</p>
-        )}
+        {events?.length === 0 && <EmptyState>No activity yet.</EmptyState>}
       </div>
     </ScrollArea>
   );
@@ -642,7 +746,7 @@ interface PolicyRow {
 }
 
 const EFFECT_STYLES: Record<string, string> = {
-  auto_approve: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  auto_approve: "bg-go-50 text-go-700 border-go-200",
   require_approval: "bg-amber-50 text-amber-700 border-amber-200",
   deny: "bg-red-50 text-red-700 border-red-200",
 };
@@ -692,7 +796,7 @@ function PoliciesTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         <p className="text-xs text-neutral-500">
           First matching rule wins, top to bottom. Toggle a rule and ask the agent again —
           its behavior changes instantly, because policy lives here, not in the model.
@@ -824,7 +928,7 @@ function TrustTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         <p className="text-xs text-neutral-500">
           Trust is earned per action shape, never assumed. Clean approvals build a streak;
           at the bar, the system proposes autonomy with the policy diff as the approval
@@ -833,9 +937,7 @@ function TrustTab() {
         {error && <ErrorBanner message={error} />}
         {!shapes && <SkeletonRows />}
         {shapes?.length === 0 && (
-          <p className="p-6 text-center text-sm text-neutral-500">
-            No trust history yet — approvals build per-shape track records here.
-          </p>
+          <EmptyState>No trust history yet — approvals build per-shape track records here.</EmptyState>
         )}
         {shapes?.map((s) => (
           <div key={s.shapeKey} className="rounded-lg border bg-white px-4 py-3">
@@ -847,7 +949,7 @@ function TrustTab() {
                 </div>
                 <div className="mt-2 flex items-center gap-2.5">
                   {s.status === "autonomous" ? (
-                    <span className="text-xs font-medium text-emerald-700">
+                    <span className="text-xs font-medium text-go-700">
                       {s.autonomousRuns} autonomous {s.autonomousRuns === 1 ? "run" : "runs"} since graduation
                     </span>
                   ) : (
@@ -940,7 +1042,7 @@ function InsightsTab() {
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex flex-col gap-2 p-4">
+      <div className={`${COL} flex flex-col gap-2 p-4`}>
         <p className="text-xs text-neutral-500">
           Coverage and outcomes, live from the action history — run an action and
           watch the numbers move. Nothing here is a projection except the minutes
@@ -996,7 +1098,7 @@ function InsightsTab() {
                         aria-label={`${k.kind}: ${k.autoResolved} of ${k.terminal} auto-resolved`}
                       >
                         <div
-                          className="h-full rounded-full bg-emerald-600 transition-all"
+                          className="h-full rounded-full bg-go-600 transition-all"
                           style={{ width: `${(k.rate ?? 0) * 100}%` }}
                         />
                       </div>
@@ -1018,7 +1120,7 @@ function InsightsTab() {
                   </div>
                   <div className="flex items-center gap-3 text-[10px] text-neutral-500">
                     <span className="flex items-center gap-1">
-                      <span className="h-2 w-2 rounded-[2px] bg-emerald-600" /> auto
+                      <span className="h-2 w-2 rounded-[2px] bg-go-600" /> auto
                     </span>
                     <span className="flex items-center gap-1">
                       <span className="h-2 w-2 rounded-[2px] bg-amber-600" /> human-approved
@@ -1059,7 +1161,7 @@ function InsightsTab() {
                               )}
                               {d.auto > 0 && (
                                 <div
-                                  className="w-full bg-emerald-600"
+                                  className="w-full bg-go-600"
                                   style={{ height: `${(d.auto / maxDay) * BAR_MAX_PX}px` }}
                                 />
                               )}
@@ -1084,6 +1186,14 @@ function InsightsTab() {
 
 // ---- shell -------------------------------------------------------------------
 
+// Signage-style tab labels: Overpass uppercase micro-labels with the go-green
+// underline supplied by the TabsList `line` variant (after:bg-* merges via cn).
+// text-foreground/75 lifts inactive labels above the WCAG-AA floor at this 11px
+// size — the shadcn default /60 falls short once the labels shrink. The active
+// tab keeps full foreground via the component's data-active variant.
+const TAB_CLASS =
+  "font-display text-[11px] font-semibold uppercase tracking-[0.12em] text-foreground/75 after:bg-go-600";
+
 export function AdminConsole() {
   // Establish the IT-console admin session (demo seam). Approve/deny and policy toggles
   // require a valid admin session server-side; without it they return 403.
@@ -1106,10 +1216,10 @@ export function AdminConsole() {
 
   return (
     <Tabs defaultValue="queue" className="flex min-h-0 flex-1 flex-col gap-0">
-      <div className="flex items-center justify-between border-b bg-white px-4 py-2">
-        <TabsList>
-          <TabsTrigger value="queue">Queue</TabsTrigger>
-          <TabsTrigger value="approvals">
+      <div className="flex items-center justify-between border-b bg-white px-4 pt-2 pb-1.5">
+        <TabsList variant="line" className="gap-3">
+          <TabsTrigger className={TAB_CLASS} value="queue">Queue</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="approvals">
             Approvals
             {pendingCount > 0 && (
               <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-semibold text-white">
@@ -1117,7 +1227,7 @@ export function AdminConsole() {
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="suggestions">
+          <TabsTrigger className={TAB_CLASS} value="suggestions">
             Suggestions
             {suggestionCount > 0 && (
               <span className="ml-1.5 rounded-full bg-violet-500 px-1.5 text-[10px] font-semibold text-white">
@@ -1125,12 +1235,14 @@ export function AdminConsole() {
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="trust">Trust</TabsTrigger>
-          <TabsTrigger value="insights">Insights</TabsTrigger>
-          <TabsTrigger value="audit">Audit log</TabsTrigger>
-          <TabsTrigger value="policies">Policies</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="trust">Trust</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="insights">Insights</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="audit">Audit log</TabsTrigger>
+          <TabsTrigger className={TAB_CLASS} value="policies">Policies</TabsTrigger>
         </TabsList>
-        <span className="text-xs text-neutral-500">IT console · Taylor Kim</span>
+        <span className="hidden text-xs whitespace-nowrap text-neutral-500 lg:block">
+          IT console · Taylor Kim
+        </span>
       </div>
       <TabsContent value="queue" className="min-h-0 flex-1">
         <QueueTab />

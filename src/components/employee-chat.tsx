@@ -59,7 +59,7 @@ const ACTION_TOOLS = new Set([
 
 function outcomeBadge(outcome: ActionOutcome) {
   const styles: Record<ActionOutcome["status"], string> = {
-    completed: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    completed: "bg-go-50 text-go-700 border-go-200",
     pending_approval: "bg-amber-50 text-amber-700 border-amber-200",
     denied: "bg-red-50 text-red-700 border-red-200",
     failed: "bg-red-50 text-red-700 border-red-200",
@@ -133,7 +133,7 @@ function MessageView({ message }: { message: UIMessage }) {
   if (message.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-teal-600 px-3.5 py-2 text-sm text-white">
+        <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-go-600 px-3.5 py-2 text-sm text-white">
           {message.parts.map((part, i) =>
             part.type === "text" ? <span key={i}>{part.text}</span> : null,
           )}
@@ -197,10 +197,10 @@ function ChatSession({ persona }: { persona: Persona }) {
   };
 
   const statusStyles: Record<string, string> = {
-    solved: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    solved: "bg-go-50 text-go-700 border-go-200",
     pending_approval: "bg-amber-50 text-amber-700 border-amber-200",
     denied: "bg-red-50 text-red-700 border-red-200",
-    in_progress: "bg-blue-50 text-blue-700 border-blue-200",
+    in_progress: "bg-neutral-100 text-neutral-600 border-neutral-200",
     new: "bg-neutral-50 text-neutral-600 border-neutral-200",
   };
 
@@ -252,7 +252,7 @@ function ChatSession({ persona }: { persona: Persona }) {
               <button
                 key={s}
                 onClick={() => send(s)}
-                className="rounded-full border bg-white px-2.5 py-1 text-xs text-neutral-600 transition-colors hover:border-teal-300 hover:text-teal-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+                className="rounded-full border bg-white px-2.5 py-1 text-xs text-neutral-600 transition-colors hover:border-go-300 hover:text-go-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-go-500"
               >
                 {s}
               </button>
@@ -302,10 +302,10 @@ export function EmployeeChat() {
               onClick={() => setPersonaId(p.id)}
               title={`${p.name} — ${p.title} (${p.role})`}
               aria-pressed={p.id === personaId}
-              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 ${
+              className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-go-500 ${
                 p.id === personaId
-                  ? "border-teal-600 bg-teal-600 text-white"
-                  : "bg-white text-neutral-600 hover:border-teal-300"
+                  ? "border-go-600 bg-go-600 text-white"
+                  : "bg-white text-neutral-600 hover:border-go-300"
               }`}
             >
               {p.name.split(" ")[0]}
