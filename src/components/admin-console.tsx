@@ -240,8 +240,10 @@ function ProposalCard({
   const tickets = proposal.evidence.ticketNumbers ?? [];
   return (
     <div
-      className={`rounded-lg border border-l-[3px] bg-white px-4 py-3 transition-colors duration-500 ${
-        celebrating ? "border-l-go-600" : "border-l-violet-500"
+      className={`rounded-lg border border-l-[3px] px-4 py-3 transition-colors duration-500 ${
+        celebrating
+          ? "border-go-300 border-l-go-600 bg-go-50"
+          : "border-l-violet-500 bg-white"
       }`}
     >
       <div className="flex items-center justify-between gap-3">
@@ -429,8 +431,10 @@ function ApprovalsTab() {
         {pending.map((a) => (
           <div
             key={a.id}
-            className={`rounded-lg border border-l-[3px] bg-white px-4 py-3 transition-colors duration-500 ${
-              celebrating === a.id ? "border-l-go-600" : "border-l-amber-500"
+            className={`rounded-lg border border-l-[3px] px-4 py-3 transition-colors duration-500 ${
+              celebrating === a.id
+                ? "border-go-300 border-l-go-600 bg-go-50"
+                : "border-l-amber-500 bg-white"
             }`}
           >
             <div className="flex items-center justify-between gap-3">
