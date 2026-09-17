@@ -1,5 +1,7 @@
 # Greenlight
 
+[![CI](https://github.com/parth012001/greenlight/actions/workflows/ci.yml/badge.svg)](https://github.com/parth012001/greenlight/actions/workflows/ci.yml)
+
 **An IT agent that acts instantly when policy allows, asks a human when it doesn't, and earns broader autonomy only after it proves itself.**
 
 A working sketch of approval-gated agent autonomy: an employee asks for access in chat, an AI agent resolves it end-to-end, and every consequential action passes through a policy engine, an approval queue, and a hash-chained audit log. Flip a policy toggle and the agent's behavior changes instantly — because policy lives in the action layer, not in the model. And trust is earned per action shape: after a track record of clean approvals, the system proposes promoting that exact shape to auto-approve, then revokes it the moment an autonomous run goes wrong.
@@ -52,3 +54,7 @@ Next.js (App Router) · TypeScript · Tailwind + shadcn/ui · Prisma (SQLite loc
 - **A second LLM to "double-check" the agent.** Safety here comes from the deterministic action layer, not from stacking models. A reviewer model would blur where trust actually lives.
 - **Auto-widening trust.** Graduation only ever produces a single-shape rule. There is intentionally no "promote the whole role or app" path — that would trade the thing that makes earned autonomy safe for convenience.
 - **Calendar-based promotion.** No "trusted after 30 days." Promotion is evidence-driven or it doesn't happen.
+
+## How it was built
+
+July 2026, with an AI coding agent doing most of the typing. The action-layer design, the rule that identity comes from the session and never the model, the decision to evaluate the guardrails rather than the generations, the counterfactual policy replay before any rule widens, and every review were mine. One review caught the agent reporting success on an HTTP 200 that had not executed anything; that fix is on main.
